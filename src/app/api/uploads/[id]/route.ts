@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { getAsset } from '@/lib/storage';
 
 export async function GET(
   request: Request,
@@ -10,23 +10,15 @@ export async function GET(
     return new NextResponse('Asset ID required', { status: 400 });
   }
 
-  const db = getDb();
-  const asset = db.prepare('SELECT * FROM uploaded_assets WHERE id = ?').get(id) as {
-    mime_type: string;
-    data_base64: string;
-    filename: string;
-  } | undefined;
-
+  const asset = await getAsset(id);
   if (!asset) {
     return new NextResponse('Asset Not Found', { status: 404 });
   }
 
-  const buffer = Buffer.from(asset.data_base64, 'base64');
-
-  return new NextResponse(buffer, {
+  return new NextResponse(new Uint8Array(asset.buffer), {
     status: 200,
     headers: {
-      'Content-Type': asset.mime_type,
+      'Content-Type': asset.mimeType,
       'Content-Disposition': `inline; filename="${asset.filename}"`,
       'Cache-Control': 'public, max-age=86400, stale-while-revalidate=43200',
     },

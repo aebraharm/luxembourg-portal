@@ -25,14 +25,14 @@ import {
 } from 'lucide-react';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-export default function HomePage() {
-  const branding = getBranding();
-  const homepage = getHomepageConfig();
-  const methods = getPaymentMethodConfig();
+export default async function HomePage() {
+  const branding = await getBranding();
+  const homepage = await getHomepageConfig();
+  const methods = await getPaymentMethodConfig();
 
   // Check if client is already logged in
   const cookieStore = cookies();
@@ -42,8 +42,7 @@ export default function HomePage() {
   if (clientToken) {
     const session = verifyToken<ClientSessionPayload>(clientToken);
     if (session) {
-      const db = getDb();
-      const client = db.prepare('SELECT full_name FROM clients WHERE id = ?').get(session.clientId) as { full_name: string } | undefined;
+      const client = await queryOne<{ full_name: string }>('SELECT full_name FROM clients WHERE id = ?', [session.clientId]);
       if (client) {
         clientSession = {
           clientName: client.full_name,
@@ -65,7 +64,6 @@ export default function HomePage() {
       <main className="flex-1">
         {/* HERO SECTION */}
         <section className="relative overflow-hidden bg-gradient-to-b from-sky-50/70 via-white to-white pt-16 pb-20 border-b border-slate-100">
-          {/* Subtle background grid pattern */}
           <div className="absolute inset-0 bg-[linear-gradient(to_right,#0284c70a_1px,transparent_1px),linear-gradient(to_bottom,#0284c70a_1px,transparent_1px)] bg-[size:4rem_4rem] pointer-events-none" />
 
           <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

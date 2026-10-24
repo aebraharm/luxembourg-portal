@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
 import { getBranding, saveSetting } from '@/lib/settings';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { logAudit } from '@/lib/audit';
-import crypto from 'node:crypto';
+import { saveAsset, deleteAsset } from '@/lib/storage';
 
 export async function GET() {
-  const branding = getBranding();
+  const branding = await getBranding();
   return NextResponse.json({
     logo_url: branding.logo_url,
     agency_name: branding.agency_name,
@@ -48,23 +47,22 @@ export async function POST(request: Request) {
 
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    const base64Data = buffer.toString('base64');
-    const assetId = `logo_${crypto.randomBytes(8).toString('hex')}`;
-    const now = new Date().toISOString();
 
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO uploaded_assets (id, filename, mime_type, data_base64, asset_type, size_bytes, created_at)
-      VALUES (?, ?, ?, ?, 'logo', ?, ?)
-    `).run(assetId, file.name, file.type, base64Data, file.size, now);
+    // Save persistently to Netlify Blobs / Object Storage / Managed DB
+    const assetId = await saveAsset({
+      filename: file.name,
+      mimeType: file.type,
+      buffer,
+      assetType: 'logo',
+    });
 
     const logoUrl = `/api/uploads/${assetId}`;
 
-    const branding = getBranding();
+    const branding = await getBranding();
     branding.logo_url = logoUrl;
-    saveSetting('branding', branding, 'branding');
+    await saveSetting('branding', branding, 'branding');
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,
@@ -78,7 +76,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE() {
   const cookieStore = cookies();
   const adminToken = cookieStore.get('admin_session')?.value;
 
@@ -91,11 +89,16 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
   }
 
-  const branding = getBranding();
-  branding.logo_url = null;
-  saveSetting('branding', branding, 'branding');
+  const branding = await getBranding();
+  if (branding.logo_url && branding.logo_url.startsWith('/api/uploads/')) {
+    const assetId = branding.logo_url.replace('/api/uploads/', '');
+    await deleteAsset(assetId);
+  }
 
-  logAudit({
+  branding.logo_url = null;
+  await saveSetting('branding', branding, 'branding');
+
+  await logAudit({
     actorType: 'admin',
     actorId: session.adminId,
     actorEmail: session.email,

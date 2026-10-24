@@ -24,12 +24,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'New password must be at least 8 characters in length.' }, { status: 400 });
     }
 
-    const res = updateAdminPassword(session.adminId, newPassword);
+    const res = await updateAdminPassword(session.adminId, newPassword);
     if (!res.success) {
       return NextResponse.json({ error: res.error || 'Password update failed' }, { status: 400 });
     }
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,

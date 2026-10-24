@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { execute, queryOne } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
-import crypto from 'node:crypto';
+import { saveAsset, deleteAsset } from '@/lib/storage';
+import { ClientRecord } from '@/lib/types';
 
 export async function POST(
   request: Request,
@@ -37,20 +38,20 @@ export async function POST(
     }
 
     const bytes = await file.arrayBuffer();
-    const base64Data = Buffer.from(bytes).toString('base64');
-    const assetId = `client_admin_${clientId}_${crypto.randomBytes(6).toString('hex')}`;
-    const now = new Date().toISOString();
+    const buffer = Buffer.from(bytes);
 
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO uploaded_assets (id, filename, mime_type, data_base64, asset_type, size_bytes, created_at)
-      VALUES (?, ?, ?, ?, 'client_photo', ?, ?)
-    `).run(assetId, file.name, file.type, base64Data, file.size, now);
+    const assetId = await saveAsset({
+      filename: file.name,
+      mimeType: file.type,
+      buffer,
+      assetType: 'client_photo',
+    });
 
     const photoUrl = `/api/uploads/${assetId}`;
-    db.prepare('UPDATE clients SET photo_url = ?, updated_at = ? WHERE id = ?').run(photoUrl, now, clientId);
+    const now = new Date().toISOString();
+    await execute('UPDATE clients SET photo_url = ?, updated_at = ? WHERE id = ?', [photoUrl, now, clientId]);
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,
@@ -78,11 +79,16 @@ export async function DELETE(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
-  const db = getDb();
-  const now = new Date().toISOString();
-  db.prepare('UPDATE clients SET photo_url = NULL, updated_at = ? WHERE id = ?').run(now, clientId);
+  const client = await queryOne<ClientRecord>('SELECT photo_url FROM clients WHERE id = ?', [clientId]);
+  if (client && client.photo_url && client.photo_url.startsWith('/api/uploads/')) {
+    const assetId = client.photo_url.replace('/api/uploads/', '');
+    await deleteAsset(assetId);
+  }
 
-  logAudit({
+  const now = new Date().toISOString();
+  await execute('UPDATE clients SET photo_url = NULL, updated_at = ? WHERE id = ?', [now, clientId]);
+
+  await logAudit({
     actorType: 'admin',
     actorId: session.adminId,
     actorEmail: session.email,

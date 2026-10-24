@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryAll } from '@/lib/db';
 import { PaymentRecord } from '@/lib/types';
 
 export async function GET() {
@@ -17,10 +17,10 @@ export async function GET() {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const payments = db
-    .prepare('SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC')
-    .all(session.clientId) as unknown as PaymentRecord[];
+  const payments = await queryAll<PaymentRecord>(
+    'SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC',
+    [session.clientId]
+  );
 
   return NextResponse.json({ payments });
 }

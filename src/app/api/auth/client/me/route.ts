@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne } from '@/lib/db';
 import { ClientRecord } from '@/lib/types';
 
 export async function GET() {
@@ -17,8 +17,7 @@ export async function GET() {
     return NextResponse.json({ authenticated: false, error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(session.clientId) as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [session.clientId]);
 
   if (!client || client.is_active !== 1) {
     return NextResponse.json({ authenticated: false, error: 'Client account inactive or removed' }, { status: 401 });

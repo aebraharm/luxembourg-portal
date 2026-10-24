@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne } from '@/lib/db';
 import { AdministratorRecord } from '@/lib/types';
 
 export async function GET() {
@@ -17,8 +17,10 @@ export async function GET() {
     return NextResponse.json({ authenticated: false, error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const admin = db.prepare('SELECT id, email, full_name, role, must_change_password FROM administrators WHERE id = ?').get(session.adminId) as AdministratorRecord | undefined;
+  const admin = await queryOne<AdministratorRecord>(
+    'SELECT id, email, full_name, role, must_change_password FROM administrators WHERE id = ?',
+    [session.adminId]
+  );
 
   if (!admin) {
     return NextResponse.json({ authenticated: false, error: 'Admin not found' }, { status: 401 });

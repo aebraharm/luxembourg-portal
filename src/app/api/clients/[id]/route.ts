@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne, queryAll, execute } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { ClientRecord, PaymentRecord } from '@/lib/types';
 
@@ -19,11 +19,10 @@ export async function GET(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
-  const db = getDb();
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(clientId) as unknown as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [clientId]);
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 });
 
-  const payments = db.prepare('SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC').all(clientId) as unknown as PaymentRecord[];
+  const payments = await queryAll<PaymentRecord>('SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC', [clientId]);
 
   return NextResponse.json({ client, payments });
 }
@@ -68,12 +67,11 @@ export async function PUT(
     }
     const amountCents = Math.round(amountNum * 100);
 
-    const db = getDb();
-
     // Check reference number uniqueness against other clients
-    const clash = db
-      .prepare('SELECT id FROM clients WHERE UPPER(reference_number) = ? AND id != ?')
-      .get(normRef, clientId);
+    const clash = await queryOne(
+      'SELECT id FROM clients WHERE UPPER(reference_number) = ? AND id != ?',
+      [normRef, clientId]
+    );
     if (clash) {
       return NextResponse.json(
         { error: `The reference number "${normRef}" is already assigned to another client.` },
@@ -83,8 +81,8 @@ export async function PUT(
 
     const now = new Date().toISOString();
 
-    db.prepare(`
-      UPDATE clients SET
+    await execute(
+      `UPDATE clients SET
         full_name = ?,
         email = ?,
         reference_number = ?,
@@ -98,25 +96,26 @@ export async function PUT(
         is_active = ?,
         can_client_edit_photo = ?,
         updated_at = ?
-      WHERE id = ?
-    `).run(
-      fullName.trim(),
-      normEmail,
-      normRef,
-      photoUrl !== undefined ? photoUrl : null,
-      caseCategory,
-      caseDetails || '',
-      amountCents,
-      paymentStatus,
-      paymentInstructions || '',
-      adminNotes || '',
-      isActive ? 1 : 0,
-      canClientEditPhoto ? 1 : 0,
-      now,
-      clientId
+      WHERE id = ?`,
+      [
+        fullName.trim(),
+        normEmail,
+        normRef,
+        photoUrl !== undefined ? photoUrl : null,
+        caseCategory,
+        caseDetails || '',
+        amountCents,
+        paymentStatus,
+        paymentInstructions || '',
+        adminNotes || '',
+        isActive ? 1 : 0,
+        canClientEditPhoto ? 1 : 0,
+        now,
+        clientId,
+      ]
     );
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,
@@ -150,16 +149,18 @@ export async function DELETE(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
-  const db = getDb();
-  const client = db.prepare('SELECT full_name, reference_number FROM clients WHERE id = ?').get(clientId) as { full_name: string; reference_number: string } | undefined;
+  const client = await queryOne<{ full_name: string; reference_number: string }>(
+    'SELECT full_name, reference_number FROM clients WHERE id = ?',
+    [clientId]
+  );
 
   if (!client) {
     return NextResponse.json({ error: 'Client not found' }, { status: 404 });
   }
 
-  db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
+  await execute('DELETE FROM clients WHERE id = ?', [clientId]);
 
-  logAudit({
+  await logAudit({
     actorType: 'admin',
     actorId: session.adminId,
     actorEmail: session.email,

@@ -1,4 +1,4 @@
-import { getDb } from './db';
+import { queryOne, execute } from './db';
 import {
   AgencyBrandingSettings,
   ThemeSettings,
@@ -94,7 +94,7 @@ export const DEFAULT_HOMEPAGE: HomepageSettings = {
     },
     {
       question: 'Are government guarantees implied by this payment portal?',
-      answer: 'No. Payment of consular and agency processing fees is required for formal filing and case representation. It does not constitute a guarantee of visa issuance by sovereign immigration authorities.',
+      answer: 'No. Payment of consular and agency processing fees is required for formal filing and case representation. It does not constitute a guarantee of visa approval by sovereign immigration authorities.',
     },
   ],
   show_welcome_section: true,
@@ -182,60 +182,73 @@ export const DEFAULT_SECURITY: SecuritySettings = {
   force_admin_password_change: true,
 };
 
-// Generic Setting Get/Set
-export function getSetting<T>(category: string, defaultVal: T): T {
+// In-memory cache for fast lookups without database roundtrip overhead
+const cache = new Map<string, { value: any; timestamp: number }>();
+const CACHE_TTL_MS = 10000; // 10s TTL for serverless instances
+
+export async function getSetting<T>(category: string, defaultVal: T): Promise<T> {
+  const cached = cache.get(category);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+    return cached.value as T;
+  }
+
   try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(category) as { value: string } | undefined;
+    const row = await queryOne<{ value: string }>('SELECT value FROM settings WHERE key = ?', [category]);
     if (!row) {
+      cache.set(category, { value: defaultVal, timestamp: now });
       return defaultVal;
     }
-    return JSON.parse(row.value) as T;
+    const parsed = JSON.parse(row.value) as T;
+    cache.set(category, { value: parsed, timestamp: now });
+    return parsed;
   } catch (err) {
     console.error(`Failed to load setting ${category}:`, err);
     return defaultVal;
   }
 }
 
-export function saveSetting<T>(category: string, value: T, sectionName = 'general'): void {
-  const db = getDb();
+export async function saveSetting<T>(category: string, value: T, sectionName = 'general'): Promise<void> {
   const now = new Date().toISOString();
   const jsonStr = JSON.stringify(value);
 
-  db.prepare(`
-    INSERT INTO settings (key, value, category, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET
-      value = excluded.value,
-      updated_at = excluded.updated_at
-  `).run(category, jsonStr, sectionName, now);
+  await execute(
+    `INSERT INTO settings (key, value, category, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`,
+    [category, jsonStr, sectionName, now]
+  );
+
+  cache.set(category, { value, timestamp: Date.now() });
 }
 
 // Typed convenience functions
-export function getBranding(): AgencyBrandingSettings {
+export async function getBranding(): Promise<AgencyBrandingSettings> {
   return getSetting<AgencyBrandingSettings>('branding', DEFAULT_BRANDING);
 }
 
-export function getTheme(): ThemeSettings {
+export async function getTheme(): Promise<ThemeSettings> {
   return getSetting<ThemeSettings>('theme', DEFAULT_THEME);
 }
 
-export function getLoadingConfig(): LoadingScreenSettings {
+export async function getLoadingConfig(): Promise<LoadingScreenSettings> {
   return getSetting<LoadingScreenSettings>('loading', DEFAULT_LOADING);
 }
 
-export function getHomepageConfig(): HomepageSettings {
+export async function getHomepageConfig(): Promise<HomepageSettings> {
   return getSetting<HomepageSettings>('homepage', DEFAULT_HOMEPAGE);
 }
 
-export function getPaymentMethodConfig(): PaymentMethodSettings {
+export async function getPaymentMethodConfig(): Promise<PaymentMethodSettings> {
   return getSetting<PaymentMethodSettings>('payment_methods', DEFAULT_PAYMENT_METHODS);
 }
 
-export function getLegalConfig(): LegalContentSettings {
+export async function getLegalConfig(): Promise<LegalContentSettings> {
   return getSetting<LegalContentSettings>('legal', DEFAULT_LEGAL);
 }
 
-export function getSecurityConfig(): SecuritySettings {
+export async function getSecurityConfig(): Promise<SecuritySettings> {
   return getSetting<SecuritySettings>('security', DEFAULT_SECURITY);
 }

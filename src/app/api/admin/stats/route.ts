@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne, queryAll } from '@/lib/db';
 
 export async function GET() {
   const cookieStore = cookies();
@@ -16,48 +16,44 @@ export async function GET() {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-
   // Real DB calculations
-  const totalClients = (db.prepare('SELECT COUNT(*) as count FROM clients').get() as { count: number }).count;
-  const activeClients = (db.prepare('SELECT COUNT(*) as count FROM clients WHERE is_active = 1').get() as { count: number }).count;
+  const totalClientsRow = await queryOne<{ count: number }>('SELECT COUNT(*) as count FROM clients');
+  const activeClientsRow = await queryOne<{ count: number }>('SELECT COUNT(*) as count FROM clients WHERE is_active = 1');
 
-  const totalAssignedCents = (
-    db.prepare('SELECT COALESCE(SUM(amount_cents), 0) as total FROM clients').get() as { total: number }
-  ).total;
+  const totalAssignedRow = await queryOne<{ total: number }>(
+    'SELECT COALESCE(SUM(amount_cents), 0) as total FROM clients'
+  );
 
-  const successfulPayments = db
-    .prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status = 'completed'")
-    .get() as { count: number; total: number };
+  const successfulPayments = await queryOne<{ count: number; total: number }>(
+    "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status = 'completed'"
+  );
 
-  const pendingPayments = db
-    .prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status IN ('pending', 'under_review')")
-    .get() as { count: number; total: number };
+  const pendingPayments = await queryOne<{ count: number; total: number }>(
+    "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status IN ('pending', 'under_review')"
+  );
 
-  const failedPayments = db
-    .prepare("SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status = 'failed'")
-    .get() as { count: number; total: number };
+  const failedPayments = await queryOne<{ count: number; total: number }>(
+    "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status = 'failed'"
+  );
 
-  const recentPayments = db
-    .prepare(`
-      SELECT p.*, c.full_name as client_name, c.email as client_email
-      FROM payments p
-      LEFT JOIN clients c ON p.client_id = c.id
-      ORDER BY p.created_at DESC
-      LIMIT 8
-    `)
-    .all();
+  const recentPayments = await queryAll(`
+    SELECT p.*, c.full_name as client_name, c.email as client_email
+    FROM payments p
+    LEFT JOIN clients c ON p.client_id = c.id
+    ORDER BY p.created_at DESC
+    LIMIT 8
+  `);
 
   return NextResponse.json({
-    totalClients,
-    activeClients,
-    totalAssignedCents,
-    successfulCount: successfulPayments.count,
-    successfulTotalCents: successfulPayments.total,
-    pendingCount: pendingPayments.count,
-    pendingTotalCents: pendingPayments.total,
-    failedCount: failedPayments.count,
-    failedTotalCents: failedPayments.total,
+    totalClients: totalClientsRow ? Number(totalClientsRow.count) : 0,
+    activeClients: activeClientsRow ? Number(activeClientsRow.count) : 0,
+    totalAssignedCents: totalAssignedRow ? Number(totalAssignedRow.total) : 0,
+    successfulCount: successfulPayments ? Number(successfulPayments.count) : 0,
+    successfulTotalCents: successfulPayments ? Number(successfulPayments.total) : 0,
+    pendingCount: pendingPayments ? Number(pendingPayments.count) : 0,
+    pendingTotalCents: pendingPayments ? Number(pendingPayments.total) : 0,
+    failedCount: failedPayments ? Number(failedPayments.count) : 0,
+    failedTotalCents: failedPayments ? Number(failedPayments.total) : 0,
     recentPayments,
   });
 }

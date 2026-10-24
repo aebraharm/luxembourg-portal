@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { getDb } from './db';
+import { queryOne, execute } from './db';
 import { ClientRecord, AdministratorRecord } from './types';
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'luxembourg-visa-portal-super-secure-secret-key-2026';
@@ -59,14 +59,17 @@ export function verifyToken<T>(token: string): T | null {
 }
 
 // Client authentication
-export function authenticateClient(email: string, referenceNumber: string): { client?: ClientRecord; error?: string } {
-  const db = getDb();
+export async function authenticateClient(
+  email: string,
+  referenceNumber: string
+): Promise<{ client?: ClientRecord; error?: string }> {
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedRef = referenceNumber.trim().toUpperCase();
 
-  const client = db
-    .prepare('SELECT * FROM clients WHERE LOWER(TRIM(email)) = ? AND UPPER(TRIM(reference_number)) = ?')
-    .get(normalizedEmail, normalizedRef) as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>(
+    'SELECT * FROM clients WHERE LOWER(TRIM(email)) = ? AND UPPER(TRIM(reference_number)) = ?',
+    [normalizedEmail, normalizedRef]
+  );
 
   if (!client) {
     return { error: 'Invalid email address or reference number. Please check your official case paperwork.' };
@@ -80,13 +83,16 @@ export function authenticateClient(email: string, referenceNumber: string): { cl
 }
 
 // Admin authentication
-export function authenticateAdmin(email: string, passwordPlain: string): { admin?: AdministratorRecord; error?: string } {
-  const db = getDb();
+export async function authenticateAdmin(
+  email: string,
+  passwordPlain: string
+): Promise<{ admin?: AdministratorRecord; error?: string }> {
   const normalizedEmail = email.trim().toLowerCase();
 
-  const admin = db
-    .prepare('SELECT * FROM administrators WHERE LOWER(TRIM(email)) = ?')
-    .get(normalizedEmail) as AdministratorRecord | undefined;
+  const admin = await queryOne<AdministratorRecord>(
+    'SELECT * FROM administrators WHERE LOWER(TRIM(email)) = ?',
+    [normalizedEmail]
+  );
 
   if (!admin) {
     return { error: 'Invalid administrator credentials.' };
@@ -101,21 +107,24 @@ export function authenticateAdmin(email: string, passwordPlain: string): { admin
 }
 
 // Password update
-export function updateAdminPassword(adminId: number, newPasswordPlain: string): { success: boolean; error?: string } {
+export async function updateAdminPassword(
+  adminId: number,
+  newPasswordPlain: string
+): Promise<{ success: boolean; error?: string }> {
   if (newPasswordPlain.length < 8) {
     return { success: false, error: 'Password must be at least 8 characters in length.' };
   }
 
-  const db = getDb();
   const salt = bcrypt.genSaltSync(10);
   const hash = bcrypt.hashSync(newPasswordPlain, salt);
   const now = new Date().toISOString();
 
-  db.prepare(`
-    UPDATE administrators
-    SET password_hash = ?, must_change_password = 0, updated_at = ?
-    WHERE id = ?
-  `).run(hash, now, adminId);
+  await execute(
+    `UPDATE administrators
+     SET password_hash = ?, must_change_password = 0, updated_at = ?
+     WHERE id = ?`,
+    [hash, now, adminId]
+  );
 
   return { success: true };
 }

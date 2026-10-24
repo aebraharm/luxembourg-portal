@@ -5,9 +5,9 @@ import { Footer } from '@/components/Footer';
 
 export const dynamic = 'force-dynamic';
 
-export default function RefundPolicyPage() {
-  const branding = getBranding();
-  const legal = getLegalConfig();
+export default async function RefundPolicyPage() {
+  const branding = await getBranding();
+  const legal = await getLegalConfig();
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col">

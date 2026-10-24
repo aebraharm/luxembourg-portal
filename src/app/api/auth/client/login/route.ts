@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     }
 
     // Rate limit check
-    const rateCheck = checkRateLimit(ip, email);
+    const rateCheck = await checkRateLimit(ip, email);
     if (!rateCheck.allowed) {
       return NextResponse.json(
         {
@@ -28,10 +28,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const authResult = authenticateClient(email, referenceNumber);
+    const authResult = await authenticateClient(email, referenceNumber);
     if (authResult.error || !authResult.client) {
-      const failInfo = recordFailedLogin(ip, email);
-      logAudit({
+      const failInfo = await recordFailedLogin(ip, email);
+      await logAudit({
         actorType: 'client',
         actorId: null,
         actorEmail: email,
@@ -53,10 +53,10 @@ export async function POST(request: Request) {
     }
 
     // Success! Clear rate limit counter
-    clearRateLimit(ip, email);
+    await clearRateLimit(ip, email);
 
     const client = authResult.client;
-    const secConfig = getSecurityConfig();
+    const secConfig = await getSecurityConfig();
     const token = signPayload(
       {
         clientId: client.id,
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       secConfig.client_session_timeout_mins || 60
     );
 
-    logAudit({
+    await logAudit({
       actorType: 'client',
       actorId: client.id,
       actorEmail: client.email,

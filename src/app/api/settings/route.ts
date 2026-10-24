@@ -16,12 +16,12 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const section = searchParams.get('section');
 
-  const branding = getBranding();
-  const theme = getTheme();
-  const loading = getLoadingConfig();
-  const homepage = getHomepageConfig();
-  const paymentMethods = getPaymentMethodConfig();
-  const legal = getLegalConfig();
+  const branding = await getBranding();
+  const theme = await getTheme();
+  const loading = await getLoadingConfig();
+  const homepage = await getHomepageConfig();
+  const paymentMethods = await getPaymentMethodConfig();
+  const legal = await getLegalConfig();
 
   if (section === 'branding') return NextResponse.json(branding);
   if (section === 'theme') return NextResponse.json(theme);
@@ -61,9 +61,9 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: 'Missing key or value in update payload.' }, { status: 400 });
     }
 
-    saveSetting(key, value, category || 'general');
+    await saveSetting(key, value, category || 'general');
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,

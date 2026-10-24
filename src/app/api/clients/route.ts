@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryAll, queryOne, execute } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { ClientRecord } from '@/lib/types';
 
@@ -24,7 +24,6 @@ export async function GET(request: Request) {
   const activeOnly = searchParams.get('active');
   const exportFormat = searchParams.get('export');
 
-  const db = getDb();
   let query = 'SELECT * FROM clients WHERE 1=1';
   const params: any[] = [];
 
@@ -47,7 +46,7 @@ export async function GET(request: Request) {
 
   query += ' ORDER BY created_at DESC';
 
-  const clients = db.prepare(query).all(...params) as unknown as ClientRecord[];
+  const clients = await queryAll<ClientRecord>(query, params);
 
   // Export handling
   if (exportFormat === 'csv') {
@@ -133,10 +132,8 @@ export async function POST(request: Request) {
     }
     const amountCents = Math.round(amountNum * 100);
 
-    const db = getDb();
-
     // Check uniqueness of reference number
-    const existingRef = db.prepare('SELECT id FROM clients WHERE UPPER(reference_number) = ?').get(normRef);
+    const existingRef = await queryOne('SELECT id FROM clients WHERE UPPER(reference_number) = ?', [normRef]);
     if (existingRef) {
       return NextResponse.json(
         { error: `The reference number "${normRef}" is already assigned to another client record.` },
@@ -146,34 +143,33 @@ export async function POST(request: Request) {
 
     const now = new Date().toISOString();
 
-    const insert = db.prepare(`
-      INSERT INTO clients (
+    const result = await execute(
+      `INSERT INTO clients (
         full_name, email, reference_number, photo_url, case_category,
         case_details, amount_cents, payment_status, payment_instructions,
         admin_notes, is_active, can_client_edit_photo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const result = insert.run(
-      fullName.trim(),
-      normEmail,
-      normRef,
-      photoUrl || null,
-      caseCategory || 'General Visa Processing',
-      caseDetails || '',
-      amountCents,
-      paymentStatus || 'pending',
-      paymentInstructions || '',
-      adminNotes || '',
-      isActive === false ? 0 : 1,
-      canClientEditPhoto === false ? 0 : 1,
-      now,
-      now
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        fullName.trim(),
+        normEmail,
+        normRef,
+        photoUrl || null,
+        caseCategory || 'General Visa Processing',
+        caseDetails || '',
+        amountCents,
+        paymentStatus || 'pending',
+        paymentInstructions || '',
+        adminNotes || '',
+        isActive === false ? 0 : 1,
+        canClientEditPhoto === false ? 0 : 1,
+        now,
+        now,
+      ]
     );
 
-    const clientId = Number(result.lastInsertRowid);
+    const clientId = result.lastInsertRowid;
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: session.adminId,
       actorEmail: session.email,

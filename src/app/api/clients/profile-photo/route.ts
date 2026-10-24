@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne, execute } from '@/lib/db';
 import { ClientRecord } from '@/lib/types';
 import { logAudit } from '@/lib/audit';
-import crypto from 'node:crypto';
+import { saveAsset, deleteAsset } from '@/lib/storage';
 
 export async function POST(request: Request) {
   const cookieStore = cookies();
@@ -19,8 +19,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(session.clientId) as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [session.clientId]);
 
   if (!client) {
     return NextResponse.json({ error: 'Client record not found' }, { status: 404 });
@@ -49,24 +48,20 @@ export async function POST(request: Request) {
 
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    const base64Data = buffer.toString('base64');
-    const assetId = `client_photo_${session.clientId}_${crypto.randomBytes(6).toString('hex')}`;
-    const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO uploaded_assets (id, filename, mime_type, data_base64, asset_type, size_bytes, created_at)
-      VALUES (?, ?, ?, ?, 'client_photo', ?, ?)
-    `).run(assetId, file.name, file.type, base64Data, file.size, now);
+    const assetId = await saveAsset({
+      filename: file.name,
+      mimeType: file.type,
+      buffer,
+      assetType: 'client_photo',
+    });
 
     const photoUrl = `/api/uploads/${assetId}`;
+    const now = new Date().toISOString();
 
-    db.prepare(`
-      UPDATE clients
-      SET photo_url = ?, updated_at = ?
-      WHERE id = ?
-    `).run(photoUrl, now, session.clientId);
+    await execute('UPDATE clients SET photo_url = ?, updated_at = ? WHERE id = ?', [photoUrl, now, session.clientId]);
 
-    logAudit({
+    await logAudit({
       actorType: 'client',
       actorId: session.clientId,
       actorEmail: session.email,
@@ -93,8 +88,7 @@ export async function DELETE() {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(session.clientId) as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [session.clientId]);
 
   if (!client) {
     return NextResponse.json({ error: 'Client record not found' }, { status: 404 });
@@ -104,10 +98,15 @@ export async function DELETE() {
     return NextResponse.json({ error: 'Client photo editing is restricted by your case administrator.' }, { status: 403 });
   }
 
-  const now = new Date().toISOString();
-  db.prepare('UPDATE clients SET photo_url = NULL, updated_at = ? WHERE id = ?').run(now, session.clientId);
+  if (client.photo_url && client.photo_url.startsWith('/api/uploads/')) {
+    const assetId = client.photo_url.replace('/api/uploads/', '');
+    await deleteAsset(assetId);
+  }
 
-  logAudit({
+  const now = new Date().toISOString();
+  await execute('UPDATE clients SET photo_url = NULL, updated_at = ? WHERE id = ?', [now, session.clientId]);
+
+  await logAudit({
     actorType: 'client',
     actorId: session.clientId,
     actorEmail: session.email,

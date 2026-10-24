@@ -10,7 +10,7 @@ export async function POST() {
   if (token) {
     const session = verifyToken<ClientSessionPayload>(token);
     if (session) {
-      logAudit({
+      await logAudit({
         actorType: 'client',
         actorId: session.clientId,
         actorEmail: session.email,

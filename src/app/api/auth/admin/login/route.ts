@@ -13,9 +13,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email and password are required.' }, { status: 400 });
     }
 
-    const authResult = authenticateAdmin(email, password);
+    const authResult = await authenticateAdmin(email, password);
     if (authResult.error || !authResult.admin) {
-      logAudit({
+      await logAudit({
         actorType: 'admin',
         actorId: null,
         actorEmail: email,
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     }
 
     const admin = authResult.admin;
-    const secConfig = getSecurityConfig();
+    const secConfig = await getSecurityConfig();
 
     const token = signPayload(
       {
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
       secConfig.admin_session_timeout_mins || 120
     );
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: admin.id,
       actorEmail: admin.email,

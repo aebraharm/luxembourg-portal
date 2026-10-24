@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne, execute } from '@/lib/db';
 import { PaymentRecord, ClientRecord } from '@/lib/types';
 import { logAudit } from '@/lib/audit';
 
@@ -25,13 +25,13 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const db = getDb();
-  const payment = db.prepare(`
-    SELECT p.*, c.full_name as client_name, c.email as client_email, c.case_category
-    FROM payments p
-    LEFT JOIN clients c ON p.client_id = c.id
-    WHERE p.id = ?
-  `).get(paymentId) as (PaymentRecord & { case_category?: string }) | undefined;
+  const payment = await queryOne<PaymentRecord & { case_category?: string }>(
+    `SELECT p.*, c.full_name as client_name, c.email as client_email, c.case_category
+     FROM payments p
+     LEFT JOIN clients c ON p.client_id = c.id
+     WHERE p.id = ?`,
+    [paymentId]
+  );
 
   if (!payment) {
     return NextResponse.json({ error: 'Payment record not found' }, { status: 404 });
@@ -69,8 +69,7 @@ export async function PUT(
     return NextResponse.json({ error: 'Admin session expired' }, { status: 401 });
   }
 
-  const db = getDb();
-  const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId) as PaymentRecord | undefined;
+  const payment = await queryOne<PaymentRecord>('SELECT * FROM payments WHERE id = ?', [paymentId]);
   if (!payment) {
     return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
   }
@@ -87,20 +86,22 @@ export async function PUT(
     const now = new Date().toISOString();
 
     // Update payment
-    db.prepare(`
-      UPDATE payments
-      SET status = ?, provider_ref = ?, updated_at = ?
-      WHERE id = ?
-    `).run(status, providerRef || payment.provider_ref, now, paymentId);
+    await execute(
+      `UPDATE payments
+       SET status = ?, provider_ref = ?, updated_at = ?
+       WHERE id = ?`,
+      [status, providerRef || payment.provider_ref, now, paymentId]
+    );
 
     // Update client status
-    db.prepare(`
-      UPDATE clients
-      SET payment_status = ?, updated_at = ?
-      WHERE id = ?
-    `).run(status, now, payment.client_id);
+    await execute(
+      `UPDATE clients
+       SET payment_status = ?, updated_at = ?
+       WHERE id = ?`,
+      [status, now, payment.client_id]
+    );
 
-    logAudit({
+    await logAudit({
       actorType: 'admin',
       actorId: adminSession.adminId,
       actorEmail: adminSession.email,

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryAll } from '@/lib/db';
 import { AuditLogRecord } from '@/lib/types';
 
 export async function GET(request: Request) {
@@ -23,7 +23,6 @@ export async function GET(request: Request) {
   const search = searchParams.get('search');
   const limit = parseInt(searchParams.get('limit') || '100', 10);
 
-  const db = getDb();
   let query = 'SELECT * FROM audit_logs WHERE 1=1';
   const params: any[] = [];
 
@@ -46,6 +45,6 @@ export async function GET(request: Request) {
   query += ' ORDER BY created_at DESC LIMIT ?';
   params.push(limit);
 
-  const logs = db.prepare(query).all(...params) as unknown as AuditLogRecord[];
+  const logs = await queryAll<AuditLogRecord>(query, params);
   return NextResponse.json({ logs });
 }

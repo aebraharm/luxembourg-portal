@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload, AdminSessionPayload } from '@/lib/auth';
-import { getDb } from '@/lib/db';
+import { queryOne, queryAll, execute } from '@/lib/db';
 import { getPaymentMethodConfig } from '@/lib/settings';
 import { logAudit } from '@/lib/audit';
 import { ClientRecord, PaymentRecord } from '@/lib/types';
@@ -21,9 +21,8 @@ export async function POST(request: Request) {
   }
 
   const ip = request.headers.get('x-forwarded-for')?.split(',')[0].trim() || '127.0.0.1';
-  const db = getDb();
 
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(session.clientId) as ClientRecord | undefined;
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [session.clientId]);
   if (!client || client.is_active !== 1) {
     return NextResponse.json({ error: 'Client record not found or inactive' }, { status: 404 });
   }
@@ -32,7 +31,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { method, cryptoCurrency, cryptoNetwork, cryptoTxHash } = body;
     const now = new Date().toISOString();
-    const pConfig = getPaymentMethodConfig();
+    const pConfig = await getPaymentMethodConfig();
 
     if (method === 'card') {
       if (!pConfig.card_enabled) {
@@ -45,27 +44,26 @@ export async function POST(request: Request) {
 
       // Insert failed attempt into payments table
       // Notice: We NEVER store card number, expiry, or CVV in database!
-      const insert = db.prepare(`
-        INSERT INTO payments (
+      const result = await execute(
+        `INSERT INTO payments (
           client_id, reference_number, method, amount_cents, currency,
           status, mode, failure_reason, client_ip, created_at, updated_at
-        ) VALUES (?, ?, 'card', ?, 'EUR', 'failed', ?, ?, ?, ?, ?)
-      `);
-
-      const result = insert.run(
-        client.id,
-        client.reference_number,
-        client.amount_cents,
-        mode,
-        failureReason,
-        ip,
-        now,
-        now
+        ) VALUES (?, ?, 'card', ?, 'EUR', 'failed', ?, ?, ?, ?, ?)`,
+        [
+          client.id,
+          client.reference_number,
+          client.amount_cents,
+          mode,
+          failureReason,
+          ip,
+          now,
+          now,
+        ]
       );
 
-      const paymentId = Number(result.lastInsertRowid);
+      const paymentId = result.lastInsertRowid;
 
-      logAudit({
+      await logAudit({
         actorType: 'client',
         actorId: client.id,
         actorEmail: client.email,
@@ -97,36 +95,31 @@ export async function POST(request: Request) {
       }
 
       // Record crypto attempt under 'under_review' for consular finance verification
-      const insert = db.prepare(`
-        INSERT INTO payments (
+      const result = await execute(
+        `INSERT INTO payments (
           client_id, reference_number, method, amount_cents, currency,
           status, mode, crypto_currency, crypto_network, crypto_tx_hash,
           client_ip, created_at, updated_at
-        ) VALUES (?, ?, 'crypto', ?, 'EUR', 'under_review', 'live', ?, ?, ?, ?, ?, ?)
-      `);
-
-      const result = insert.run(
-        client.id,
-        client.reference_number,
-        client.amount_cents,
-        cryptoCurrency || 'USDT',
-        cryptoNetwork || 'Ethereum (ERC20)',
-        cryptoTxHash.trim(),
-        ip,
-        now,
-        now
+        ) VALUES (?, ?, 'crypto', ?, 'EUR', 'under_review', 'live', ?, ?, ?, ?, ?, ?)`,
+        [
+          client.id,
+          client.reference_number,
+          client.amount_cents,
+          cryptoCurrency || 'USDT',
+          cryptoNetwork || 'Ethereum (ERC20)',
+          cryptoTxHash.trim(),
+          ip,
+          now,
+          now,
+        ]
       );
 
-      const paymentId = Number(result.lastInsertRowid);
+      const paymentId = result.lastInsertRowid;
 
       // Update client status to under_review
-      db.prepare(`
-        UPDATE clients
-        SET payment_status = 'under_review', updated_at = ?
-        WHERE id = ?
-      `).run(now, client.id);
+      await execute('UPDATE clients SET payment_status = \'under_review\', updated_at = ? WHERE id = ?', [now, client.id]);
 
-      logAudit({
+      await logAudit({
         actorType: 'client',
         actorId: client.id,
         actorEmail: client.email,
@@ -173,7 +166,6 @@ export async function GET(request: Request) {
   const method = searchParams.get('method');
   const search = searchParams.get('search');
 
-  const db = getDb();
   let query = `
     SELECT p.*, c.full_name as client_name, c.email as client_email
     FROM payments p
@@ -200,6 +192,6 @@ export async function GET(request: Request) {
 
   query += ' ORDER BY p.created_at DESC';
 
-  const payments = db.prepare(query).all(...params) as unknown as PaymentRecord[];
+  const payments = await queryAll<PaymentRecord>(query, params);
   return NextResponse.json({ payments });
 }
