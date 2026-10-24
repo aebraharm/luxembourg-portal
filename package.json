@@ -1,0 +1,36 @@
+{
+  "name": "luxembourg-portal",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "db:migrate": "npx tsx scripts/migrate.ts",
+    "test": "npx tsx scripts/test-runner.ts",
+    "test:e2e": "npx tsx scripts/e2e-scenario-test.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "@netlify/blobs": "^11.1.6",
+    "bcryptjs": "^2.4.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.453.0",
+    "next": "^14.2.24",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.16.4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.3"
+  }
+}

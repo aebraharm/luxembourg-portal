@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-primary: #dc2626;
+  --brand-primary-hover: #b91c1c;
+  --brand-sky: #0284c7;
+  --brand-sky-light: #e0f2fe;
+  --brand-navy: #0f172a;
+  --border-radius-card: 0.75rem;
+}
+
+body {
+  color: #0f172a;
+  background: #ffffff;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
