@@ -40,15 +40,24 @@ export default async function HomePage() {
   let clientSession: { clientName: string; referenceNumber: string } | null = null;
 
   if (clientToken) {
-    const session = verifyToken<ClientSessionPayload>(clientToken);
-    if (session) {
-      const client = await queryOne<{ full_name: string }>('SELECT full_name FROM clients WHERE id = ?', [session.clientId]);
-      if (client) {
-        clientSession = {
-          clientName: client.full_name,
-          referenceNumber: session.referenceNumber,
-        };
+    try {
+      const session = verifyToken<ClientSessionPayload>(clientToken);
+      if (session && session.clientId) {
+        const client = await queryOne<{ full_name: string }>(
+          'SELECT full_name FROM clients WHERE id = ?',
+          [session.clientId]
+        );
+        if (client) {
+          clientSession = {
+            clientName: client.full_name,
+            referenceNumber: session.referenceNumber,
+          };
+        }
       }
+    } catch (err) {
+      // Gracefully handle invalid, expired, or unresolvable sessions without crashing the public homepage
+      console.warn('Notice: Failed to resolve client session for homepage visitor:', err instanceof Error ? err.message : String(err));
+      clientSession = null;
     }
   }
 
@@ -256,14 +265,14 @@ export default async function HomePage() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {homepage.instructions_steps.map((item) => (
+                {(homepage.instructions_steps ?? []).filter(Boolean).map((item, idx) => (
                   <div
-                    key={item.step}
+                    key={item.step || idx + 1}
                     className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs relative flex flex-col justify-between"
                   >
                     <div>
                       <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 font-extrabold text-base flex items-center justify-center border border-red-100 mb-4">
-                        0{item.step}
+                        0{item.step || idx + 1}
                       </div>
                       <h3 className="text-base font-bold text-slate-900 mb-2">{item.title}</h3>
                       <p className="text-xs text-slate-600 leading-relaxed">{item.desc}</p>
@@ -416,7 +425,7 @@ export default async function HomePage() {
               </div>
 
               <div className="space-y-4">
-                {homepage.faqs.map((faq, idx) => (
+                {(homepage.faqs ?? []).filter(Boolean).map((faq, idx) => (
                   <div
                     key={idx}
                     className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs"

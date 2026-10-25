@@ -199,9 +199,13 @@ export async function getSetting<T>(category: string, defaultVal: T): Promise<T>
       cache.set(category, { value: defaultVal, timestamp: now });
       return defaultVal;
     }
-    const parsed = JSON.parse(row.value) as T;
-    cache.set(category, { value: parsed, timestamp: now });
-    return parsed;
+    const parsed = JSON.parse(row.value);
+    const merged =
+      typeof defaultVal === 'object' && defaultVal !== null && !Array.isArray(defaultVal)
+        ? { ...defaultVal, ...parsed }
+        : parsed;
+    cache.set(category, { value: merged, timestamp: now });
+    return merged as T;
   } catch (err) {
     console.error(`Failed to load setting ${category}:`, err);
     return defaultVal;
@@ -224,6 +228,70 @@ export async function saveSetting<T>(category: string, value: T, sectionName = '
   cache.set(category, { value, timestamp: Date.now() });
 }
 
+/**
+ * Validates and merges stored homepage configuration against default settings.
+ * Ensures instructions_steps and faqs always contain valid, non-null arrays even
+ * if the stored database JSON is empty, malformed, or missing properties.
+ */
+export function sanitizeHomepageConfig(
+  stored: Partial<HomepageSettings> | null | undefined
+): HomepageSettings {
+  if (!stored || typeof stored !== 'object') {
+    return { ...DEFAULT_HOMEPAGE };
+  }
+
+  const merged: HomepageSettings = {
+    hero_badge: typeof stored.hero_badge === 'string' ? stored.hero_badge : DEFAULT_HOMEPAGE.hero_badge,
+    hero_headline: typeof stored.hero_headline === 'string' ? stored.hero_headline : DEFAULT_HOMEPAGE.hero_headline,
+    hero_description: typeof stored.hero_description === 'string' ? stored.hero_description : DEFAULT_HOMEPAGE.hero_description,
+    hero_button_text: typeof stored.hero_button_text === 'string' ? stored.hero_button_text : DEFAULT_HOMEPAGE.hero_button_text,
+    hero_secondary_info: typeof stored.hero_secondary_info === 'string' ? stored.hero_secondary_info : DEFAULT_HOMEPAGE.hero_secondary_info,
+    welcome_title: typeof stored.welcome_title === 'string' ? stored.welcome_title : DEFAULT_HOMEPAGE.welcome_title,
+    welcome_text: typeof stored.welcome_text === 'string' ? stored.welcome_text : DEFAULT_HOMEPAGE.welcome_text,
+    visa_info_title: typeof stored.visa_info_title === 'string' ? stored.visa_info_title : DEFAULT_HOMEPAGE.visa_info_title,
+    visa_info_text: typeof stored.visa_info_text === 'string' ? stored.visa_info_text : DEFAULT_HOMEPAGE.visa_info_text,
+    instructions_title: typeof stored.instructions_title === 'string' ? stored.instructions_title : DEFAULT_HOMEPAGE.instructions_title,
+    show_welcome_section: typeof stored.show_welcome_section === 'boolean' ? stored.show_welcome_section : DEFAULT_HOMEPAGE.show_welcome_section,
+    show_visa_info_section: typeof stored.show_visa_info_section === 'boolean' ? stored.show_visa_info_section : DEFAULT_HOMEPAGE.show_visa_info_section,
+    show_instructions_section: typeof stored.show_instructions_section === 'boolean' ? stored.show_instructions_section : DEFAULT_HOMEPAGE.show_instructions_section,
+    show_methods_section: typeof stored.show_methods_section === 'boolean' ? stored.show_methods_section : DEFAULT_HOMEPAGE.show_methods_section,
+    show_faq_section: typeof stored.show_faq_section === 'boolean' ? stored.show_faq_section : DEFAULT_HOMEPAGE.show_faq_section,
+    show_support_section: typeof stored.show_support_section === 'boolean' ? stored.show_support_section : DEFAULT_HOMEPAGE.show_support_section,
+    instructions_steps: DEFAULT_HOMEPAGE.instructions_steps,
+    faqs: DEFAULT_HOMEPAGE.faqs,
+  };
+
+  // Safely validate and preserve custom instructions_steps if provided
+  if (Array.isArray(stored.instructions_steps) && stored.instructions_steps.length > 0) {
+    const validSteps = stored.instructions_steps
+      .filter((s): s is { step: number; title: string; desc: string } => Boolean(s && typeof s === 'object'))
+      .map((s, idx) => ({
+        step: typeof s.step === 'number' ? s.step : idx + 1,
+        title: typeof s.title === 'string' ? s.title : `Step ${idx + 1}`,
+        desc: typeof s.desc === 'string' ? s.desc : '',
+      }));
+    if (validSteps.length > 0) {
+      merged.instructions_steps = validSteps;
+    }
+  }
+
+  // Safely validate and preserve custom faqs if provided
+  if (Array.isArray(stored.faqs) && stored.faqs.length > 0) {
+    const validFaqs = stored.faqs
+      .filter((f): f is { question: string; answer: string } => Boolean(f && typeof f === 'object'))
+      .map((f) => ({
+        question: typeof f.question === 'string' ? f.question : '',
+        answer: typeof f.answer === 'string' ? f.answer : '',
+      }))
+      .filter((f) => f.question.trim().length > 0);
+    if (validFaqs.length > 0) {
+      merged.faqs = validFaqs;
+    }
+  }
+
+  return merged;
+}
+
 // Typed convenience functions
 export async function getBranding(): Promise<AgencyBrandingSettings> {
   return getSetting<AgencyBrandingSettings>('branding', DEFAULT_BRANDING);
@@ -238,7 +306,8 @@ export async function getLoadingConfig(): Promise<LoadingScreenSettings> {
 }
 
 export async function getHomepageConfig(): Promise<HomepageSettings> {
-  return getSetting<HomepageSettings>('homepage', DEFAULT_HOMEPAGE);
+  const raw = await getSetting<Partial<HomepageSettings>>('homepage', DEFAULT_HOMEPAGE);
+  return sanitizeHomepageConfig(raw);
 }
 
 export async function getPaymentMethodConfig(): Promise<PaymentMethodSettings> {
