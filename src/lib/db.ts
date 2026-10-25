@@ -133,7 +133,15 @@ export function getDb(): Client {
 
 export async function ensureDbInit(): Promise<void> {
   if (!initPromise) {
-    initPromise = initDatabaseSchema();
+    initPromise = (async () => {
+      try {
+        await initDatabaseSchema();
+      } catch (err) {
+        // Clear cached promise on failure so subsequent requests can retry
+        initPromise = null;
+        throw err;
+      }
+    })();
   }
   return initPromise;
 }
@@ -190,7 +198,6 @@ async function initDatabaseSchema(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
     CREATE INDEX IF NOT EXISTS idx_clients_ref ON clients(reference_number);
-    CREATE INDEX IF NOT EXISTS idx_clients_region ON clients(region_id);
 
     CREATE TABLE IF NOT EXISTS invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,7 +247,6 @@ async function initDatabaseSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_payments_client ON payments(client_id);
     CREATE INDEX IF NOT EXISTS idx_payments_ref ON payments(reference_number);
     CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
-    CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -292,6 +298,19 @@ async function initDatabaseSchema(): Promise<void> {
     await client.execute('ALTER TABLE payments ADD COLUMN invoice_id INTEGER REFERENCES invoices(id)');
   } catch {
     // Column already exists or created via initial DDL
+  }
+
+  // Safely create indexes on evolved columns AFTER columns are guaranteed to exist
+  try {
+    await client.execute('CREATE INDEX IF NOT EXISTS idx_clients_region ON clients(region_id)');
+  } catch {
+    // Index already exists
+  }
+
+  try {
+    await client.execute('CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id)');
+  } catch {
+    // Index already exists
   }
 
   // Bootstrap initial administrator ONLY if the administrators table is completely empty.
