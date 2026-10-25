@@ -62,12 +62,15 @@ export function verifyToken<T>(token: string): T | null {
 export async function authenticateClient(
   email: string,
   referenceNumber: string
-): Promise<{ client?: ClientRecord; error?: string }> {
+): Promise<{ client?: ClientRecord & { region_name?: string }; error?: string }> {
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedRef = referenceNumber.trim().toUpperCase();
 
-  const client = await queryOne<ClientRecord>(
-    'SELECT * FROM clients WHERE LOWER(TRIM(email)) = ? AND UPPER(TRIM(reference_number)) = ?',
+  const client = await queryOne<ClientRecord & { region_name?: string }>(
+    `SELECT c.*, r.name as region_name
+     FROM clients c
+     LEFT JOIN regions r ON c.region_id = r.id
+     WHERE LOWER(TRIM(c.email)) = ? AND UPPER(TRIM(c.reference_number)) = ?`,
     [normalizedEmail, normalizedRef]
   );
 

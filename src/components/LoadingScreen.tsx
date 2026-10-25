@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { BrandLogo } from './BrandLogo';
-import { ShieldCheck, ArrowRight, RotateCw, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, ArrowRight, RotateCw, AlertTriangle, Globe } from 'lucide-react';
 
 interface LoadingScreenProps {
   title?: string;
@@ -10,6 +10,7 @@ interface LoadingScreenProps {
   agencyName?: string;
   tagline?: string;
   logoUrl?: string | null;
+  region?: string | null;
   currentStep?: number;
   totalSteps?: number;
   stepName?: string;
@@ -20,11 +21,12 @@ interface LoadingScreenProps {
 }
 
 export function LoadingScreen({
-  title = 'Securing Portal Connection',
+  title = 'Preparing your client portal...',
   description = 'Verifying immigration records through 256-bit encrypted gateway...',
   agencyName,
   tagline,
   logoUrl,
+  region,
   currentStep,
   totalSteps = 4,
   stepName,
@@ -90,7 +92,7 @@ export function LoadingScreen({
         <div className="relative w-24 h-24 mb-6 flex items-center justify-center">
           {/* Outer glowing pulsing sky-blue ring */}
           <div className="absolute inset-0 rounded-full border-4 border-sky-100 animate-pulse" />
-          
+
           {/* Animated SVG ring spinner */}
           <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 100 100">
             <circle
@@ -128,9 +130,24 @@ export function LoadingScreen({
         <h3 className="text-xl font-bold text-slate-900 tracking-tight mb-2">
           {title}
         </h3>
-        <p className="text-sm text-slate-600 max-w-sm mb-6 leading-relaxed">
+        <p className="text-sm text-slate-600 max-w-sm mb-4 leading-relaxed">
           {description}
         </p>
+
+        {/* Region Banner Component */}
+        <div className="w-full mb-6">
+          {region ? (
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-50 border border-sky-200 text-sky-800 text-xs font-semibold shadow-xs animate-in fade-in">
+              <Globe className="w-3.5 h-3.5 text-sky-600" />
+              <span>Your designated region: <span className="font-bold">{region}</span></span>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-50 border border-slate-200 text-slate-600 text-xs font-medium">
+              <Globe className="w-3.5 h-3.5 text-slate-400" />
+              <span>Your regional details are being prepared</span>
+            </div>
+          )}
+        </div>
 
         {/* Step Indicator */}
         {showSteps && currentStep !== undefined && (

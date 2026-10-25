@@ -21,43 +21,70 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const search = searchParams.get('search');
   const status = searchParams.get('status');
+  const regionId = searchParams.get('regionId');
   const activeOnly = searchParams.get('active');
   const exportFormat = searchParams.get('export');
 
-  let query = 'SELECT * FROM clients WHERE 1=1';
+  let query = `
+    SELECT c.*, r.name as region_name
+    FROM clients c
+    LEFT JOIN regions r ON c.region_id = r.id
+    WHERE 1=1
+  `;
   const params: any[] = [];
 
   if (search) {
-    query += ' AND (full_name LIKE ? OR email LIKE ? OR reference_number LIKE ? OR case_category LIKE ?)';
+    query += ' AND (c.full_name LIKE ? OR c.email LIKE ? OR c.reference_number LIKE ? OR c.case_category LIKE ?)';
     const term = `%${search.trim()}%`;
     params.push(term, term, term, term);
   }
 
   if (status && status !== 'all') {
-    query += ' AND payment_status = ?';
+    query += ' AND c.payment_status = ?';
     params.push(status);
   }
 
-  if (activeOnly === '1') {
-    query += ' AND is_active = 1';
-  } else if (activeOnly === '0') {
-    query += ' AND is_active = 0';
+  if (regionId && regionId !== 'all') {
+    if (regionId === 'unassigned') {
+      query += ' AND c.region_id IS NULL';
+    } else {
+      query += ' AND c.region_id = ?';
+      params.push(parseInt(regionId, 10));
+    }
   }
 
-  query += ' ORDER BY created_at DESC';
+  if (activeOnly === '1') {
+    query += ' AND c.is_active = 1';
+  } else if (activeOnly === '0') {
+    query += ' AND c.is_active = 0';
+  }
+
+  query += ' ORDER BY c.created_at DESC';
 
   const clients = await queryAll<ClientRecord>(query, params);
 
   // Export handling
   if (exportFormat === 'csv') {
-    const headers = ['ID', 'Full Name', 'Email', 'Reference Number', 'Case Category', 'Amount EUR', 'Payment Status', 'Active', 'Created At'];
+    const headers = [
+      'ID',
+      'Full Name',
+      'Email',
+      'Reference Number',
+      'Region',
+      'Case Category',
+      'Amount EUR',
+      'Payment Status',
+      'Active',
+      'Created At',
+    ];
     const rows = clients.map((c) => [
       c.id,
       `"${c.full_name.replace(/"/g, '""')}"`,
       c.email,
       c.reference_number,
+      `"${(c.region_name || 'Unassigned').replace(/"/g, '""')}"`,
       `"${c.case_category.replace(/"/g, '""')}"`,
-      (c.amount_cents / 100).toFixed(2),
+      ((c.amount_cents || 0) / 100).toFixed(2),
       c.payment_status,
       c.is_active === 1 ? 'Yes' : 'No',
       c.created_at,
@@ -94,6 +121,7 @@ export async function POST(request: Request) {
       fullName,
       email,
       referenceNumber,
+      regionId,
       caseCategory,
       caseDetails,
       amountEur,
@@ -125,13 +153,6 @@ export async function POST(request: Request) {
     const normEmail = email.trim().toLowerCase();
     const normRef = referenceNumber.trim().toUpperCase();
 
-    // Minor unit integer conversion for EUR (cents)
-    const amountNum = parseFloat(amountEur);
-    if (isNaN(amountNum) || amountNum < 0) {
-      return NextResponse.json({ error: 'Valid positive amount in EUR is required.' }, { status: 400 });
-    }
-    const amountCents = Math.round(amountNum * 100);
-
     // Check uniqueness of reference number
     const existingRef = await queryOne('SELECT id FROM clients WHERE UPPER(reference_number) = ?', [normRef]);
     if (existingRef) {
@@ -141,14 +162,36 @@ export async function POST(request: Request) {
       );
     }
 
+    // Validate region if provided
+    let finalRegionId: number | null = null;
+    if (regionId !== undefined && regionId !== null && regionId !== '' && regionId !== 'none') {
+      const parsedRegionId = parseInt(String(regionId), 10);
+      if (!isNaN(parsedRegionId)) {
+        const region = await queryOne('SELECT id, is_active FROM regions WHERE id = ?', [parsedRegionId]);
+        if (!region) {
+          return NextResponse.json({ error: 'Selected region does not exist.' }, { status: 400 });
+        }
+        finalRegionId = parsedRegionId;
+      }
+    }
+
+    // Fee amount is OPTIONAL - client can be created without an invoice or fee
+    let amountCents = 0;
+    if (amountEur !== undefined && amountEur !== null && String(amountEur).trim() !== '') {
+      const amountNum = parseFloat(String(amountEur));
+      if (!isNaN(amountNum) && amountNum >= 0) {
+        amountCents = Math.round(amountNum * 100);
+      }
+    }
+
     const now = new Date().toISOString();
 
     const result = await execute(
       `INSERT INTO clients (
         full_name, email, reference_number, photo_url, case_category,
         case_details, amount_cents, payment_status, payment_instructions,
-        admin_notes, is_active, can_client_edit_photo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        admin_notes, is_active, can_client_edit_photo, region_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fullName.trim(),
         normEmail,
@@ -162,6 +205,7 @@ export async function POST(request: Request) {
         adminNotes || '',
         isActive === false ? 0 : 1,
         canClientEditPhoto === false ? 0 : 1,
+        finalRegionId,
         now,
         now,
       ]
@@ -179,6 +223,7 @@ export async function POST(request: Request) {
         fullName: fullName.trim(),
         email: normEmail,
         referenceNumber: normRef,
+        regionId: finalRegionId,
         amountCents,
       },
     });

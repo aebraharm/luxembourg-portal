@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { BrandLogo } from '@/components/BrandLogo';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import {
@@ -16,8 +16,9 @@ import {
   HelpCircle,
   ExternalLink,
   QrCode,
+  Receipt,
 } from 'lucide-react';
-import { PaymentMethodSettings } from '@/lib/types';
+import { PaymentMethodSettings, InvoiceRecord } from '@/lib/types';
 
 interface ClientMe {
   id: number;
@@ -25,12 +26,16 @@ interface ClientMe {
   referenceNumber: string;
   caseCategory: string;
   amountCents: number;
+  region?: string | null;
 }
 
-export default function CryptoPaymentPage() {
+function CryptoPaymentContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const invoiceId = searchParams?.get('invoiceId');
 
   const [client, setClient] = useState<ClientMe | null>(null);
+  const [invoice, setInvoice] = useState<InvoiceRecord | null>(null);
   const [methods, setMethods] = useState<PaymentMethodSettings | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -60,8 +65,9 @@ export default function CryptoPaymentPage() {
     Promise.all([
       fetch('/api/auth/client/me'),
       fetch('/api/settings'),
+      invoiceId ? fetch(`/api/invoices/${invoiceId}`) : Promise.resolve(null),
     ])
-      .then(async ([meRes, settingsRes]) => {
+      .then(async ([meRes, settingsRes, invRes]) => {
         if (!meRes.ok) {
           router.push('/login');
           return;
@@ -77,10 +83,15 @@ export default function CryptoPaymentPage() {
         if (settingsData.branding) setBranding(settingsData.branding);
         if (settingsData.loading) setLoadingConfig(settingsData.loading);
         if (settingsData.paymentMethods) setMethods(settingsData.paymentMethods);
+
+        if (invRes && invRes.ok) {
+          const invData = await invRes.json();
+          if (invData.invoice) setInvoice(invData.invoice);
+        }
       })
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
-  }, [router]);
+  }, [router, invoiceId]);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -116,7 +127,8 @@ export default function CryptoPaymentPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           method: 'crypto',
-          cryptoCurrency: currentCoin.symbol,
+          invoiceId: invoiceId || undefined,
+          cryptoCurrency: currentCoin.currency || currentCoin.symbol,
           cryptoNetwork: currentCoin.network,
           cryptoTxHash: txHash.trim(),
         }),
@@ -170,12 +182,13 @@ export default function CryptoPaymentPage() {
 
   if (!client || !methods) return null;
 
-  const formattedAmount = (client.amountCents / 100).toLocaleString('en-US', {
+  const displayAmountCents = invoice ? invoice.amount_cents : client.amountCents;
+  const formattedAmount = (displayAmountCents / 100).toLocaleString('en-US', {
     style: 'currency',
     currency: 'EUR',
   });
 
-  const availableCoins = (methods.crypto_currencies || []).filter((c) => c.enabled);
+  const availableCoins = (methods.crypto_currencies || []).filter((c) => (c as any).enabled !== false);
   const activeCoin = availableCoins[selectedCoinIndex] || availableCoins[0];
   const isAddressConfigured = Boolean(activeCoin?.wallet_address && activeCoin.wallet_address.trim().length > 0);
 
@@ -191,7 +204,7 @@ export default function CryptoPaymentPage() {
             href="/client/payment/select"
           />
           <button
-            onClick={() => router.push('/client/payment/select')}
+            onClick={() => router.push(invoiceId ? `/client/payment/select?invoiceId=${invoiceId}` : '/client/payment/select')}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -204,13 +217,26 @@ export default function CryptoPaymentPage() {
         {/* Case & Amount Summary Header */}
         <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-bold text-sky-700 uppercase tracking-wider">
-              Consular Case File Reference
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold text-sky-700 uppercase tracking-wider">
+                Consular Case File Reference
+              </span>
+              {invoice && (
+                <>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-xs font-mono font-bold text-slate-700 flex items-center gap-1">
+                    <Receipt className="w-3.5 h-3.5 text-sky-600" />
+                    {invoice.invoice_number}
+                  </span>
+                </>
+              )}
+            </div>
             <div className="text-base font-mono font-bold text-slate-900 mt-0.5">
               {client.referenceNumber}
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">{client.caseCategory}</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {invoice ? invoice.reason : client.caseCategory}
+            </p>
           </div>
 
           <div className="text-right">
@@ -400,5 +426,19 @@ export default function CryptoPaymentPage() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function CryptoPaymentPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="text-xs font-semibold text-slate-500">Loading cryptocurrency depository...</div>
+        </div>
+      }
+    >
+      <CryptoPaymentContent />
+    </Suspense>
   );
 }

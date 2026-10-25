@@ -21,7 +21,7 @@ export async function GET() {
   const activeClientsRow = await queryOne<{ count: number }>('SELECT COUNT(*) as count FROM clients WHERE is_active = 1');
 
   const totalAssignedRow = await queryOne<{ total: number }>(
-    'SELECT COALESCE(SUM(amount_cents), 0) as total FROM clients'
+    'SELECT COALESCE(SUM(amount_cents), 0) as total FROM invoices'
   );
 
   const successfulPayments = await queryOne<{ count: number; total: number }>(
@@ -36,10 +36,23 @@ export async function GET() {
     "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM payments WHERE status = 'failed'"
   );
 
+  const totalInvoicesRow = await queryOne<{ count: number; total: number }>(
+    'SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM invoices'
+  );
+
+  const paidInvoicesRow = await queryOne<{ count: number; total: number }>(
+    "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total FROM invoices WHERE status = 'paid'"
+  );
+
+  const totalRegionsRow = await queryOne<{ count: number }>(
+    'SELECT COUNT(*) as count FROM regions WHERE is_active = 1'
+  );
+
   const recentPayments = await queryAll(`
-    SELECT p.*, c.full_name as client_name, c.email as client_email
+    SELECT p.*, c.full_name as client_name, c.email as client_email, inv.invoice_number
     FROM payments p
     LEFT JOIN clients c ON p.client_id = c.id
+    LEFT JOIN invoices inv ON p.invoice_id = inv.id
     ORDER BY p.created_at DESC
     LIMIT 8
   `);
@@ -54,6 +67,9 @@ export async function GET() {
     pendingTotalCents: pendingPayments ? Number(pendingPayments.total) : 0,
     failedCount: failedPayments ? Number(failedPayments.count) : 0,
     failedTotalCents: failedPayments ? Number(failedPayments.total) : 0,
+    totalInvoicesCount: totalInvoicesRow ? Number(totalInvoicesRow.count) : 0,
+    paidInvoicesCount: paidInvoicesRow ? Number(paidInvoicesRow.count) : 0,
+    totalRegionsCount: totalRegionsRow ? Number(totalRegionsRow.count) : 0,
     recentPayments,
   });
 }

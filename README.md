@@ -3,8 +3,19 @@
 A production-grade, secure, responsive fintech payment portal built exclusively for an immigration agency handling statutory visa-related fees, consular disbursements, and relocation tariffs.
 
 The platform provides two completely segregated environments:
-1. **Public-Facing Client Portal**: A guided multi-page client journey with dedicated loading transition screens, fee schedules in EUR (€), card payments (with demo test mode ending in "Payment failed"), regional PayPal notices, and cryptocurrency remittances.
-2. **Comprehensive Admin Portal**: A secure administration dashboard to manually assign unique client reference numbers, manage case categories, reconcile verified remittances, inspect audit logs, and configure all website content and 16 settings categories.
+1. **Public-Facing Client Portal**: A guided multi-page client journey with dedicated loading transition screens displaying server-retrieved regional assignment, fee and invoice schedules in EUR (€), card payments (with demo test mode ending in "Payment failed"), regional PayPal notices, and cryptocurrency remittances.
+2. **Comprehensive Admin Portal**: A secure administration dashboard to manage clients (decoupled from fee/invoice creation), configure regional jurisdictions, issue and manage EUR invoices, reconcile verified remittances, inspect audit logs, and configure all website content and settings categories.
+
+---
+
+## 🏛️ Regional Jurisdictions & Invoice Architecture
+
+- **Client Management Decoupling**: Clients are created independently without requiring fee assignments or auto-generating invoices. Client profiles (full name, email, reference number, region, case category) can be edited freely without altering billing histories.
+- **Dedicated Invoice Management**: Full invoice lifecycle (`issued`, `paid`, `overdue`, `cancelled`) with unique invoice numbers, required payment reasons, EUR amounts stored in strict minor units (cents), issue dates, and due dates.
+- **Paid Invoice Immutability**: Paid invoices cannot be silently altered or reverted to unpaid. Corrections require issuing replacement invoices or auditable cancellation with an administrative reason.
+- **Dynamic Overdue Calculations**: Invoices past their due date dynamically evaluate to `overdue` unless already marked `paid` or `cancelled`.
+- **Regional Jurisdiction Engine**: Structured region records (`Europe`, `Africa`, `Asia-Pacific`, `North America`, etc.) with admin CRUD, activation toggles, and safe client assignment guards preventing deletion of regions with active applicants.
+- **Server-Fetched Client Loading Screen**: Authenticated client loading screen queries the database for the client's official assigned region and displays it during loading transitions.
 
 ---
 
@@ -127,10 +138,10 @@ The migration script:
 # 1. Install dependencies
 npm install
 
-# 2. Run unit & integration test suite (22 automated tests)
+# 2. Run unit, integration & production regression test suites (52 unit + 19 production tests = 71 tests)
 npm test
 
-# 3. Run end-to-end scenario test (Admin creation -> Manual reference -> Client login -> Demo Card Failure -> Crypto TxID -> Admin reconciliation)
+# 3. Run end-to-end scenario test (Admin setup -> Decoupled client -> Regional resolution -> Invoice issuance -> Demo Card Failure -> Crypto TxID -> Admin reconciliation)
 npm run test:e2e
 
 # 4. Verify database migration & health check

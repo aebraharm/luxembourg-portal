@@ -149,12 +149,14 @@ export function AdminLayout({ children }: AdminLayoutProps) {
   if (!admin) return null;
 
   const navLinks = [
-    { label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
-    { label: 'Client Management', href: '/admin/clients', icon: Users },
-    { label: 'Payment Remittances', href: '/admin/payments', icon: CreditCard },
-    { label: 'Website & Settings', href: '/admin/settings', icon: Sliders },
-    { label: 'Audit Security Logs', href: '/admin/audit-logs', icon: ShieldCheck },
-    { label: 'System Health', href: '/admin/health', icon: Activity },
+    { label: 'Overview', href: '/admin', icon: LayoutDashboard },
+    { label: 'Clients', href: '/admin/clients', icon: Users },
+    { label: 'Invoices', href: '/admin/invoices', icon: FileText },
+    { label: 'Regions', href: '/admin/regions', icon: Globe },
+    { label: 'Payments', href: '/admin/payments', icon: CreditCard },
+    { label: 'Settings', href: '/admin/settings', icon: Sliders },
+    { label: 'Audit Logs', href: '/admin/audit-logs', icon: ShieldCheck },
+    { label: 'Health', href: '/admin/health', icon: Activity },
   ];
 
   return (

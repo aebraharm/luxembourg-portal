@@ -23,8 +23,12 @@ import {
   ExternalLink,
   ChevronRight,
   RefreshCw,
+  Globe,
+  Receipt,
+  X,
+  AlertTriangle,
 } from 'lucide-react';
-import { PaymentRecord, PaymentStatus } from '@/lib/types';
+import { PaymentRecord, PaymentStatus, InvoiceRecord, InvoiceStatus } from '@/lib/types';
 
 interface ClientData {
   id: number;
@@ -38,6 +42,8 @@ interface ClientData {
   paymentStatus: PaymentStatus;
   paymentInstructions: string;
   canClientEditPhoto: boolean;
+  region?: string | null;
+  regionId?: number | null;
   createdAt: string;
 }
 
@@ -45,12 +51,16 @@ export default function ClientDashboardPage() {
   const router = useRouter();
 
   const [client, setClient] = useState<ClientData | null>(null);
+  const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [navigating, setNavigating] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Selected invoice for detail modal
+  const [selectedInvoice, setSelectedInvoice] = useState<InvoiceRecord | null>(null);
 
   const [branding, setBranding] = useState<{
     agency_name: string;
@@ -74,9 +84,11 @@ export default function ClientDashboardPage() {
 
   const loadData = async () => {
     try {
-      const [meRes, settingsRes] = await Promise.all([
+      const [meRes, settingsRes, invoicesRes, paymentsRes] = await Promise.all([
         fetch('/api/auth/client/me'),
         fetch('/api/settings'),
+        fetch('/api/invoices/client'),
+        fetch('/api/payments/client'),
       ]);
 
       if (!meRes.ok) {
@@ -96,8 +108,11 @@ export default function ClientDashboardPage() {
       if (settingsData.branding) setBranding(settingsData.branding);
       if (settingsData.loading) setLoadingConfig(settingsData.loading);
 
-      // Fetch client payment history
-      const paymentsRes = await fetch('/api/payments/client');
+      if (invoicesRes.ok) {
+        const invData = await invoicesRes.json();
+        setInvoices(invData.invoices || []);
+      }
+
       if (paymentsRes.ok) {
         const pData = await paymentsRes.json();
         setPayments(pData.payments || []);
@@ -162,18 +177,70 @@ export default function ClientDashboardPage() {
     }
   };
 
-  const proceedToPaymentMethodSelection = () => {
+  const proceedToPayInvoice = (invoiceId?: number) => {
+    const query = invoiceId ? `?invoiceId=${invoiceId}` : '';
     setNavigating(true);
+    setTimeout(() => {
+      router.push(`/client/payment/select${query}`);
+    }, 400);
+  };
+
+  const getInvoiceStatusBadge = (inv: InvoiceRecord) => {
+    const effStatus = inv.effective_status || inv.status;
+    switch (effStatus) {
+      case 'paid':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+            Paid &amp; Settled
+          </span>
+        );
+      case 'payment_pending':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+            <Clock className="w-3 h-3 text-sky-600" />
+            Under Verification
+          </span>
+        );
+      case 'overdue':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            <AlertTriangle className="w-3 h-3 text-rose-600" />
+            Overdue
+          </span>
+        );
+      case 'unpaid':
+      case 'issued':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            <Clock className="w-3 h-3 text-amber-600" />
+            Awaiting Payment
+          </span>
+        );
+      case 'cancelled':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200 line-through">
+            Cancelled
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
+            {effStatus}
+          </span>
+        );
+    }
   };
 
   if (loading) {
     return (
       <LoadingScreen
-        title="Loading Client Dashboard"
+        title="Preparing your client portal..."
         description="Decrypting consular file and fee schedule..."
         agencyName={branding.agency_name}
         tagline={branding.tagline}
         logoUrl={branding.logo_url}
+        region={client?.region}
         currentStep={2}
         totalSteps={4}
         stepName="Loading Assigned Case Records"
@@ -185,18 +252,16 @@ export default function ClientDashboardPage() {
   if (navigating && client) {
     return (
       <LoadingScreen
-        title="Opening Payment Gateways"
-        description="Preparing authorized settlement channels for your case..."
+        title="Preparing Payment Gateways"
+        description="Connecting to authorized consular settlement channels..."
         agencyName={branding.agency_name}
         tagline={branding.tagline}
         logoUrl={branding.logo_url}
+        region={client?.region}
         currentStep={3}
         totalSteps={4}
-        stepName="Payment Method Selection"
-        minDurationMs={loadingConfig.transition_duration_ms || 1200}
-        onComplete={() => {
-          router.push('/client/payment/select');
-        }}
+        stepName="Payment Method Initialization"
+        minDurationMs={600}
       />
     );
   }
@@ -205,50 +270,10 @@ export default function ClientDashboardPage() {
     return null;
   }
 
-  const formattedAmount = (client.amountCents / 100).toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'EUR',
-  });
-
-  const getStatusBadge = (status: PaymentStatus) => {
-    switch (status) {
-      case 'completed':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-            Paid &amp; Confirmed
-          </span>
-        );
-      case 'under_review':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
-            <Clock className="w-3.5 h-3.5 text-amber-600" />
-            Under Consular Review
-          </span>
-        );
-      case 'failed':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-200">
-            <XCircle className="w-3.5 h-3.5 text-red-600" />
-            Payment Failed
-          </span>
-        );
-      case 'cancelled':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-300">
-            Cancelled
-          </span>
-        );
-      case 'pending':
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-800 border border-sky-200">
-            <Clock className="w-3.5 h-3.5 text-sky-600" />
-            Pending Remittance
-          </span>
-        );
-    }
-  };
+  // Determine payable invoices
+  const payableInvoices = invoices.filter(
+    (i) => (i.effective_status || i.status) === 'issued' || (i.effective_status || i.status) === 'unpaid' || (i.effective_status || i.status) === 'overdue'
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col selection:bg-sky-100 selection:text-sky-900">
@@ -321,12 +346,21 @@ export default function ClientDashboardPage() {
             </div>
 
             <div>
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span className="text-xs font-semibold text-sky-300 uppercase tracking-wider">
                   Immigration Client Record
                 </span>
                 <span className="text-white/40">•</span>
                 <span className="text-xs text-white/80 font-mono font-medium">{client.referenceNumber}</span>
+                {client.region ? (
+                  <>
+                    <span className="text-white/40">•</span>
+                    <span className="inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-200 border border-sky-400/30 font-medium">
+                      <Globe className="w-3 h-3" />
+                      {client.region}
+                    </span>
+                  </>
+                ) : null}
               </div>
               <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{client.fullName}</h1>
               <p className="text-xs sm:text-sm text-sky-100/90 mt-1 flex items-center gap-2">
@@ -347,12 +381,12 @@ export default function ClientDashboardPage() {
               </button>
             )}
 
-            {client.paymentStatus !== 'completed' && (
+            {payableInvoices.length > 0 && (
               <button
-                onClick={proceedToPaymentMethodSelection}
+                onClick={() => proceedToPayInvoice(payableInvoices[0]?.id)}
                 className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-bold text-sm shadow-lg shadow-red-600/30 transition-all"
               >
-                <span>Make Visa Fee Payment</span>
+                <span>Pay Outstanding Fee</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             )}
@@ -366,225 +400,430 @@ export default function ClientDashboardPage() {
           </div>
         )}
 
-        {/* 2-Column Grid: Case Details & Assigned Fee */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Left: Assigned Fee & Primary Payment Action (5 cols) */}
-          <div className="lg:col-span-5 space-y-6">
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-md p-6 sm:p-8 space-y-6">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-                  Assigned Consular Fee
-                </h3>
-                {getStatusBadge(client.paymentStatus)}
-              </div>
+        {/* Assigned Consular Invoices Section */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-sky-600" />
+                Assigned Consular Invoices &amp; Fee Schedules
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Official statutory payment notices issued for your immigration and relocation procedure.
+              </p>
+            </div>
+            <button
+              onClick={loadData}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Refresh
+            </button>
+          </div>
 
-              {/* Amount Display */}
-              <div>
-                <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">
-                  Total Statutory Remittance Due (EUR)
-                </span>
-                <div className="mt-1 flex items-baseline gap-2">
-                  <span className="text-4xl font-black text-slate-900 tracking-tight">
-                    {formattedAmount}
-                  </span>
-                  <span className="text-sm font-semibold text-slate-500">EUR (€)</span>
-                </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Fixed statutory fee verified by Consular Liaison. No currency conversion surcharge.
-                </p>
+          {/* If Client has NO invoices: Professional Empty State */}
+          {invoices.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-12 text-center max-w-2xl mx-auto">
+              <div className="w-16 h-16 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto mb-4 border border-sky-100">
+                <FileText className="w-8 h-8" />
               </div>
-
-              {/* Payment Instructions from Admin */}
-              <div className="p-4 rounded-xl bg-sky-50/70 border border-sky-100 space-y-2">
-                <h4 className="text-xs font-bold text-sky-900 flex items-center gap-1.5">
-                  <FileText className="w-4 h-4 text-sky-700" />
-                  <span>Case Officer Instructions</span>
-                </h4>
-                <p className="text-xs text-slate-700 leading-relaxed">
-                  {client.paymentInstructions ||
-                    'Please settle your assigned fee promptly to avoid scheduling delays with consular filing.'}
-                </p>
+              <h3 className="text-lg font-bold text-slate-900 mb-1">
+                No Invoices Currently Available
+              </h3>
+              <p className="text-sm text-slate-500 leading-relaxed max-w-md mx-auto mb-6">
+                Your immigration case currently has no pending or issued invoices. Consular disbursement schedules will appear here once officially generated by your assigned case officer.
+              </p>
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 max-w-md mx-auto flex items-center justify-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span>Your application file is active. No immediate fee settlement is required at this stage.</span>
               </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {invoices.map((inv) => {
+                const effStatus = inv.effective_status || inv.status;
+                const isPayable = effStatus === 'issued' || effStatus === 'unpaid' || effStatus === 'overdue';
 
-              {/* Primary Action Button: RED */}
-              <div>
-                {client.paymentStatus === 'completed' ? (
-                  <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium space-y-2 text-center">
-                    <CheckCircle2 className="w-6 h-6 text-emerald-600 mx-auto" />
-                    <p className="font-bold text-sm text-emerald-900">Payment Verified &amp; Cleared</p>
-                    <p>Your payment has been reconciled into the official consular case filing ledger.</p>
-                  </div>
-                ) : (
-                  <button
-                    onClick={proceedToPaymentMethodSelection}
-                    className="w-full inline-flex items-center justify-center gap-2.5 py-4 px-6 rounded-xl bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-red-600/25 transition-all"
+                return (
+                  <div
+                    key={inv.id}
+                    className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-5 flex flex-col justify-between hover:shadow-md transition-shadow"
                   >
-                    <CreditCard className="w-5 h-5" />
-                    <span>Proceed to Select Payment Method</span>
-                    <ArrowRight className="w-5 h-5" />
-                  </button>
-                )}
+                    <div>
+                      <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                        <span className="font-mono text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                          <Receipt className="w-4 h-4 text-sky-600" />
+                          {inv.invoice_number}
+                        </span>
+                        {getInvoiceStatusBadge(inv)}
+                      </div>
+
+                      <div className="mt-3">
+                        <h4 className="text-sm font-bold text-slate-900 leading-snug">
+                          {inv.reason}
+                        </h4>
+                        <div className="mt-2 text-2xl font-black text-slate-900">
+                          €{((inv.amount_cents || 0) / 100).toFixed(2)}{' '}
+                          <span className="text-xs font-semibold text-slate-500">EUR (€)</span>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2 text-xs text-slate-500">
+                        <div>
+                          <span className="block text-[10px] uppercase font-semibold text-slate-400">Issue Date</span>
+                          <span className="font-medium text-slate-700">{inv.issue_date}</span>
+                        </div>
+                        <div>
+                          <span className="block text-[10px] uppercase font-semibold text-slate-400">Due Date</span>
+                          <span className="font-medium text-slate-700">{inv.due_date}</span>
+                        </div>
+                      </div>
+
+                      {inv.notes && (
+                        <p className="mt-3 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100 line-clamp-2">
+                          {inv.notes}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-5 pt-3 border-t border-slate-100 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedInvoice(inv)}
+                        className="flex-1 py-2 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition text-center"
+                      >
+                        View Invoice
+                      </button>
+
+                      {isPayable ? (
+                        <button
+                          type="button"
+                          onClick={() => proceedToPayInvoice(inv.id)}
+                          className="flex-1 py-2 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 transition shadow-xs text-center flex items-center justify-center gap-1"
+                        >
+                          <span>Pay Invoice</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      ) : effStatus === 'payment_pending' ? (
+                        <span className="flex-1 py-2 text-xs font-semibold rounded-lg bg-sky-50 text-sky-700 text-center border border-sky-200">
+                          Pending Review
+                        </span>
+                      ) : (
+                        <span className="flex-1 py-2 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 text-center border border-emerald-200">
+                          Paid
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Case Information & Details Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
+            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">
+              Official Consular Case Profile
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Applicant Legal Identity
+                </span>
+                <span className="font-bold text-sm text-slate-900 mt-0.5 block">{client.fullName}</span>
+                <span className="text-slate-500 mt-0.5 block">{client.email}</span>
               </div>
 
-              <div className="text-center pt-1 border-t border-slate-100">
-                <span className="text-[11px] text-slate-400 font-medium">
-                  Reference: <strong className="font-mono text-slate-700">{client.referenceNumber}</strong>
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Consular Reference Code
                 </span>
+                <span className="font-mono font-bold text-sm text-sky-800 mt-0.5 block">
+                  {client.referenceNumber}
+                </span>
+                <span className="text-slate-500 mt-0.5 block">Manually assigned official file</span>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Designated Region
+                </span>
+                <span className="font-semibold text-slate-900 mt-0.5 block flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-sky-600" />
+                  {client.region || 'Regional details are being prepared'}
+                </span>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Category of Submission
+                </span>
+                <span className="font-semibold text-slate-900 mt-0.5 block">{client.caseCategory}</span>
               </div>
             </div>
 
-            {/* Consular Support Card */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 space-y-4">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-                <HelpCircle className="w-4 h-4 text-sky-600" />
-                <span>Assigned Case Support</span>
-              </h3>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                If you have questions regarding your fee amount or case reference, please contact your designated consular desk.
-              </p>
-              <div className="space-y-2 pt-2 border-t border-slate-100 text-xs text-slate-600">
-                <div className="flex items-center gap-2">
-                  <Mail className="w-3.5 h-3.5 text-sky-600" />
-                  <a href={`mailto:${branding.support_email}`} className="text-sky-700 font-semibold hover:underline">
+            {client.caseDetails && (
+              <div>
+                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Case Details &amp; Background Notes
+                </h4>
+                <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-200/80">
+                  {client.caseDetails}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
+            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">
+              Consular Assistance
+            </h3>
+
+            <div className="space-y-4 text-xs text-slate-600">
+              <div className="flex items-start gap-3">
+                <Mail className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-slate-800 block">Diplomatic Fee Desk</span>
+                  <a href={`mailto:${branding.support_email}`} className="text-sky-700 hover:underline">
                     {branding.support_email}
                   </a>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Phone className="w-3.5 h-3.5 text-sky-600" />
+              </div>
+
+              <div className="flex items-start gap-3">
+                <Phone className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-slate-800 block">Consular Hotline</span>
                   <span>{branding.support_phone}</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Clock className="w-3.5 h-3.5 text-sky-600" />
+              </div>
+
+              <div className="flex items-start gap-3">
+                <Clock className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-slate-800 block">Working Hours</span>
                   <span>{branding.support_hours}</span>
                 </div>
               </div>
             </div>
+
+            <div className="pt-4 border-t border-slate-100">
+              <div className="p-3.5 rounded-xl bg-sky-50 text-sky-900 text-[11px] leading-relaxed">
+                <ShieldCheck className="w-4 h-4 text-sky-700 inline-block mr-1" />
+                All payments processed through this portal are held under Luxembourg Ministry of Foreign Affairs statutory regulations.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Payment Remittance History Table */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-base font-bold text-slate-900">
+              Remittance Transaction History
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Verified record of submitted payment attempts and consular reconciliations.
+            </p>
           </div>
 
-          {/* Right: Case Information & Payment History (7 cols) */}
-          <div className="lg:col-span-7 space-y-6">
-            {/* Case Details Card */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-                  Immigration Case File Summary
-                </h3>
-                <span className="text-xs font-mono font-semibold text-slate-500">
-                  ID #{client.id}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-600">
+              <thead className="bg-slate-50 text-[11px] uppercase font-bold text-slate-500 tracking-wider border-b border-slate-200">
+                <tr>
+                  <th className="py-3 px-6">Date</th>
+                  <th className="py-3 px-6">Payment Method</th>
+                  <th className="py-3 px-6">Associated Invoice</th>
+                  <th className="py-3 px-6">Amount (EUR)</th>
+                  <th className="py-3 px-6">Transaction Status</th>
+                  <th className="py-3 px-6">Audit Remark</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {payments.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-slate-400">
+                      No payment remittance attempts recorded yet.
+                    </td>
+                  </tr>
+                ) : (
+                  payments.map((p) => (
+                    <tr key={p.id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 px-6 font-medium text-slate-700">
+                        {new Date(p.created_at).toLocaleDateString('en-GB')}
+                      </td>
+                      <td className="py-3.5 px-6 font-semibold uppercase text-slate-900">
+                        {p.method}
+                      </td>
+                      <td className="py-3.5 px-6 font-mono text-sky-700">
+                        {p.invoice_number || '—'}
+                      </td>
+                      <td className="py-3.5 px-6 font-bold text-slate-900">
+                        €{((p.amount_cents || 0) / 100).toFixed(2)}
+                      </td>
+                      <td className="py-3.5 px-6">
+                        {p.status === 'completed' ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            Completed
+                          </span>
+                        ) : p.status === 'under_review' ? (
+                          <span className="inline-flex items-center gap-1 text-sky-700 font-semibold">
+                            <Clock className="w-3.5 h-3.5 text-sky-600" />
+                            Under Review
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-rose-700 font-semibold">
+                            <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                            {p.failure_reason || 'Failed'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-6 text-slate-500 font-mono text-[11px] truncate max-w-xs">
+                        {p.crypto_tx_hash || p.provider_ref || p.failure_reason || '—'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      {/* Invoice Detail Modal */}
+      {selectedInvoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full p-6 sm:p-8 my-8 animate-in fade-in zoom-in-95 duration-200">
+            {/* Header with Agency Branding */}
+            <div className="flex items-start justify-between pb-4 border-b border-slate-100">
+              <BrandLogo
+                logoUrl={branding.logo_url}
+                agencyName={branding.agency_name}
+                tagline={branding.tagline}
+                size="sm"
+                showTagline={false}
+              />
+              <button
+                type="button"
+                onClick={() => setSelectedInvoice(null)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-[11px] uppercase font-bold text-sky-700 tracking-wider">
+                    Statutory Fee Invoice
+                  </span>
+                  <h3 className="text-lg font-black text-slate-900 mt-0.5">
+                    {selectedInvoice.invoice_number}
+                  </h3>
+                </div>
+                <div>{getInvoiceStatusBadge(selectedInvoice)}</div>
+              </div>
+
+              {/* Client & Region details */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Applicant:</span>
+                  <span className="font-bold text-slate-900">{client.fullName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Reference Number:</span>
+                  <span className="font-mono font-bold text-sky-800">{client.referenceNumber}</span>
+                </div>
+                {client.region && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Designated Region:</span>
+                    <span className="font-semibold text-slate-800 flex items-center gap-1">
+                      <Globe className="w-3 h-3 text-sky-600" />
+                      {client.region}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Reason for payment & Amount */}
+              <div className="space-y-1">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Payment Reason
+                </span>
+                <p className="text-sm font-bold text-slate-900">
+                  {selectedInvoice.reason}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-sky-50/70 border border-sky-100 flex items-baseline justify-between">
+                <div>
+                  <span className="text-[11px] font-semibold text-sky-800 uppercase tracking-wider">
+                    Amount Payable (EUR)
+                  </span>
+                  <div className="text-3xl font-black text-slate-900 mt-0.5">
+                    €{((selectedInvoice.amount_cents || 0) / 100).toFixed(2)}
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-sky-700 uppercase">
+                  EUR (€) Strictly
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                  <span className="text-slate-400 font-medium">Applicant Full Name</span>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{client.fullName}</p>
+              {/* Dates */}
+              <div className="grid grid-cols-2 gap-3 text-xs text-slate-600">
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
+                  <span className="block text-[10px] uppercase font-semibold text-slate-400">Date of Issuance</span>
+                  <span className="font-bold text-slate-800">{selectedInvoice.issue_date}</span>
                 </div>
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                  <span className="text-slate-400 font-medium">Primary Contact Email</span>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5 truncate">{client.email}</p>
-                </div>
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                  <span className="text-slate-400 font-medium">Payment Reference Number</span>
-                  <p className="font-mono font-bold text-sky-800 text-sm mt-0.5">{client.referenceNumber}</p>
-                  <span className="text-[10px] text-slate-400">Manually Assigned by Officer</span>
-                </div>
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                  <span className="text-slate-400 font-medium">Case Category</span>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{client.caseCategory}</p>
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
+                  <span className="block text-[10px] uppercase font-semibold text-slate-400">Payment Due Date</span>
+                  <span className="font-bold text-slate-800">{selectedInvoice.due_date}</span>
                 </div>
               </div>
 
-              {client.caseDetails && (
-                <div className="pt-2">
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
-                    Consular Case Notes
+              {/* Instructions */}
+              {selectedInvoice.notes && (
+                <div className="space-y-1">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    Payment Instructions
                   </span>
-                  <p className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 leading-relaxed font-sans whitespace-pre-wrap">
-                    {client.caseDetails}
+                  <p className="text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200 leading-relaxed">
+                    {selectedInvoice.notes}
                   </p>
                 </div>
               )}
             </div>
 
-            {/* Payment History Card */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-4">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-                  Payment History &amp; Attempts
-                </h3>
-                <span className="text-xs text-slate-500 font-medium">{payments.length} Record(s)</span>
-              </div>
-
-              {payments.length === 0 ? (
-                <div className="text-center py-10 px-4 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                  <Clock className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                  <p className="text-xs font-bold text-slate-700">No Payment Attempts Recorded Yet</p>
-                  <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                    When you initiate or complete a payment, the full transaction history and status logs will appear here.
-                  </p>
-                  {client.paymentStatus !== 'completed' && (
-                    <button
-                      onClick={proceedToPaymentMethodSelection}
-                      className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold text-xs shadow-xs"
-                    >
-                      <span>Initiate First Remittance</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-200 text-slate-400 uppercase tracking-wider text-[11px]">
-                        <th className="py-2.5 font-bold">Transaction</th>
-                        <th className="py-2.5 font-bold">Method</th>
-                        <th className="py-2.5 font-bold">Amount</th>
-                        <th className="py-2.5 font-bold">Status</th>
-                        <th className="py-2.5 font-bold">Date</th>
-                        <th className="py-2.5 font-bold text-right">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {payments.map((p) => (
-                        <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-3 font-mono font-bold text-slate-800">
-                            #{p.id}
-                          </td>
-                          <td className="py-3 capitalize text-slate-700 font-medium">
-                            {p.method}
-                          </td>
-                          <td className="py-3 font-bold text-slate-900">
-                            {(p.amount_cents / 100).toLocaleString('en-US', {
-                              style: 'currency',
-                              currency: 'EUR',
-                            })}
-                          </td>
-                          <td className="py-3">
-                            {getStatusBadge(p.status)}
-                          </td>
-                          <td className="py-3 text-slate-500">
-                            {new Date(p.created_at).toLocaleDateString()}
-                          </td>
-                          <td className="py-3 text-right">
-                            <button
-                              onClick={() => router.push(`/client/payment/result?id=${p.id}`)}
-                              className="text-sky-700 hover:text-sky-900 font-semibold inline-flex items-center gap-1"
-                            >
-                              <span>View</span>
-                              <ChevronRight className="w-3 h-3" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+            {/* Modal Actions */}
+            <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedInvoice(null)}
+                className="px-4 py-2 text-xs font-semibold rounded-lg text-slate-700 hover:bg-slate-100"
+              >
+                Close
+              </button>
+              {((selectedInvoice.effective_status || selectedInvoice.status) === 'issued' ||
+                (selectedInvoice.effective_status || selectedInvoice.status) === 'unpaid' ||
+                (selectedInvoice.effective_status || selectedInvoice.status) === 'overdue') && (
+                <button
+                  type="button"
+                  onClick={() => proceedToPayInvoice(selectedInvoice.id)}
+                  className="px-5 py-2 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 shadow-sm flex items-center gap-1.5"
+                >
+                  <span>Proceed to Payment</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
               )}
             </div>
           </div>
         </div>
-      </main>
+      )}
     </div>
   );
 }

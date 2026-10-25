@@ -2,6 +2,26 @@ export type PaymentStatus = 'pending' | 'under_review' | 'completed' | 'failed' 
 export type PaymentMethodType = 'card' | 'paypal' | 'crypto';
 export type PaymentMode = 'demo' | 'live';
 
+export type InvoiceStatus =
+  | 'draft'
+  | 'issued'
+  | 'unpaid'
+  | 'payment_pending'
+  | 'paid'
+  | 'overdue'
+  | 'cancelled';
+
+export interface RegionRecord {
+  id: number;
+  name: string;
+  code: string | null;
+  description: string;
+  is_active: number; // 1 or 0
+  created_at: string;
+  updated_at: string;
+  client_count?: number;
+}
+
 export interface ClientRecord {
   id: number;
   full_name: string;
@@ -16,8 +36,32 @@ export interface ClientRecord {
   admin_notes: string;
   is_active: number; // 1 or 0
   can_client_edit_photo: number; // 1 or 0
+  region_id?: number | null;
+  region_name?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface InvoiceRecord {
+  id: number;
+  client_id: number;
+  invoice_number: string;
+  reason: string;
+  amount_cents: number;
+  currency: string;
+  issue_date: string;
+  due_date: string;
+  status: InvoiceStatus;
+  notes: string;
+  admin_notes?: string;
+  replacement_invoice_id?: number | null;
+  created_at: string;
+  updated_at: string;
+  client_name?: string;
+  client_email?: string;
+  client_reference?: string;
+  client_region?: string | null;
+  effective_status?: InvoiceStatus;
 }
 
 export interface AdministratorRecord {
@@ -40,6 +84,8 @@ export interface PaymentRecord {
   currency: string;
   status: PaymentStatus;
   mode: PaymentMode;
+  invoice_id?: number | null;
+  invoice_number?: string | null;
   provider_ref?: string | null;
   failure_reason?: string | null;
   crypto_currency?: string | null;
@@ -139,6 +185,7 @@ export interface PaymentMethodSettings {
   paypal_enabled: boolean;
   paypal_order: number;
   paypal_unavailability_message: string;
+  paypal_notice_message?: string;
   paypal_instructions: string;
   paypal_client_id: string;
 
@@ -149,6 +196,7 @@ export interface PaymentMethodSettings {
   crypto_support_contact: string;
   crypto_currencies: {
     symbol: string;
+    currency?: string;
     name: string;
     network: string;
     wallet_address: string;

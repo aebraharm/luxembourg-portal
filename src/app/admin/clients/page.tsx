@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
+import Link from 'next/link';
 import { AdminLayout } from '@/components/AdminLayout';
 import {
   Users,
@@ -20,14 +21,19 @@ import {
   User,
   ShieldCheck,
   ChevronDown,
+  Globe,
+  Receipt,
+  ExternalLink,
 } from 'lucide-react';
-import { ClientRecord, PaymentStatus } from '@/lib/types';
+import { ClientRecord, PaymentStatus, RegionRecord } from '@/lib/types';
 
 export default function AdminClientsPage() {
   const [clients, setClients] = useState<ClientRecord[]>([]);
+  const [regions, setRegions] = useState<RegionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [regionFilter, setRegionFilter] = useState('all');
   const [activeFilter, setActiveFilter] = useState('all');
 
   // Create / Edit modal state
@@ -38,9 +44,9 @@ export default function AdminClientsPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
+  const [regionId, setRegionId] = useState<string>('');
   const [caseCategory, setCaseCategory] = useState('Work Visa (EU Blue Card - Luxembourg)');
   const [caseDetails, setCaseDetails] = useState('');
-  const [amountEur, setAmountEur] = useState('850.00');
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('pending');
   const [paymentInstructions, setPaymentInstructions] = useState('');
   const [adminNotes, setAdminNotes] = useState('');
@@ -55,10 +61,23 @@ export default function AdminClientsPage() {
   // Delete confirm
   const [deleteId, setDeleteId] = useState<number | null>(null);
 
+  const fetchRegions = async () => {
+    try {
+      const res = await fetch('/api/regions');
+      const data = await res.json();
+      setRegions(data.regions || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const fetchClients = async () => {
     setLoading(true);
     try {
       let url = `/api/clients?search=${encodeURIComponent(search)}&status=${statusFilter}`;
+      if (regionFilter !== 'all') {
+        url += `&regionId=${regionFilter}`;
+      }
       if (activeFilter !== 'all') {
         url += `&active=${activeFilter}`;
       }
@@ -73,8 +92,12 @@ export default function AdminClientsPage() {
   };
 
   useEffect(() => {
+    fetchRegions();
+  }, []);
+
+  useEffect(() => {
     fetchClients();
-  }, [search, statusFilter, activeFilter]);
+  }, [search, statusFilter, regionFilter, activeFilter]);
 
   const openCreateModal = () => {
     setModalMode('create');
@@ -82,12 +105,12 @@ export default function AdminClientsPage() {
     setFullName('');
     setEmail('');
     setReferenceNumber('');
+    setRegionId(regions[0]?.id ? String(regions[0].id) : '');
     setCaseCategory('Work Visa (EU Blue Card - Luxembourg)');
     setCaseDetails('');
-    setAmountEur('850.00');
     setPaymentStatus('pending');
     setPaymentInstructions(
-      'Please settle the official consular processing fee within 14 calendar days of case notification.'
+      'Official statutory consular processing. Fee schedules and invoices are managed independently in the Invoices dashboard.'
     );
     setAdminNotes('');
     setIsActive(true);
@@ -102,9 +125,9 @@ export default function AdminClientsPage() {
     setFullName(c.full_name);
     setEmail(c.email);
     setReferenceNumber(c.reference_number);
+    setRegionId(c.region_id ? String(c.region_id) : '');
     setCaseCategory(c.case_category);
     setCaseDetails(c.case_details || '');
-    setAmountEur((c.amount_cents / 100).toFixed(2));
     setPaymentStatus(c.payment_status);
     setPaymentInstructions(c.payment_instructions || '');
     setAdminNotes(c.admin_notes || '');
@@ -131,9 +154,9 @@ export default function AdminClientsPage() {
         fullName,
         email,
         referenceNumber,
+        regionId: regionId ? parseInt(regionId, 10) : null,
         caseCategory,
         caseDetails,
-        amountEur,
         paymentStatus,
         paymentInstructions,
         adminNotes,
@@ -179,9 +202,12 @@ export default function AdminClientsPage() {
       const data = await res.json();
       if (res.ok && data.photoUrl) {
         setPhotoUrl(data.photoUrl);
+        fetchClients();
+      } else {
+        setFormError(data.error || 'Failed to upload photo');
       }
     } else {
-      // In create mode, read as local base64 data preview
+      // Direct base64 preview for create modal
       const reader = new FileReader();
       reader.onload = () => {
         setPhotoUrl(reader.result as string);
@@ -190,66 +216,49 @@ export default function AdminClientsPage() {
     }
   };
 
-  const handleDeleteClient = async (id: number) => {
+  const handleDeleteClient = async () => {
+    if (!deleteId) return;
     try {
-      const res = await fetch(`/api/clients/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/clients/${deleteId}`, { method: 'DELETE' });
       if (res.ok) {
         setDeleteId(null);
         fetchClients();
+      } else {
+        const d = await res.json();
+        alert(d.error || 'Failed to delete client');
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const exportCsv = () => {
-    window.location.href = `/api/clients?search=${encodeURIComponent(search)}&status=${statusFilter}&export=csv`;
-  };
-
-  const exportJson = () => {
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(clients, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute('download', `clients_export_${new Date().toISOString().slice(0, 10)}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-  };
-
   const getStatusBadge = (status: PaymentStatus) => {
     switch (status) {
       case 'completed':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
             Paid
           </span>
         );
       case 'under_review':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
-            <Clock className="w-3 h-3 text-amber-600" />
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+            <Clock className="w-3 h-3 text-sky-600" />
             Under Review
           </span>
         );
       case 'failed':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-800">
-            <XCircle className="w-3 h-3 text-red-600" />
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            <XCircle className="w-3 h-3 text-rose-600" />
             Failed
           </span>
         );
-      case 'cancelled':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700">
-            Cancelled
-          </span>
-        );
-      case 'pending':
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-sky-800">
-            <Clock className="w-3 h-3 text-sky-600" />
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            <Clock className="w-3 h-3 text-amber-600" />
             Pending
           </span>
         );
@@ -259,151 +268,169 @@ export default function AdminClientsPage() {
   return (
     <AdminLayout>
       <div className="space-y-6">
-        {/* Header & Controls */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        {/* Page Title & Actions */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Client &amp; Case Reference Records
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              <Users className="w-6 h-6 text-sky-600" />
+              Consular Applicant Client Registry
             </h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Create, edit, and assign manual reference numbers and EUR fee obligations to immigration applicants.
+            <p className="text-sm text-slate-500 mt-1">
+              Register applicant accounts, configure regional assignments, and manage case profiles independently of invoice issuance.
             </p>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={exportCsv}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition-colors"
+          <div className="flex items-center gap-2.5">
+            <a
+              href="/api/clients?export=csv"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
             >
-              <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span>Export CSV</span>
-            </button>
-            <button
-              onClick={exportJson}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition-colors"
-            >
-              <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span>Export JSON</span>
-            </button>
+              <Download className="w-3.5 h-3.5" />
+              Export CSV
+            </a>
             <button
               onClick={openCreateModal}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md shadow-red-600/20 transition-all"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors shadow-xs"
             >
               <Plus className="w-4 h-4" />
-              <span>Create Client Record</span>
+              Add New Client
             </button>
           </div>
         </div>
 
-        {/* Filters and Search Bar */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-col md:flex-row items-center gap-4">
-          <div className="relative flex-1 w-full">
-            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        {/* Filter Bar */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
+              placeholder="Search by full name, email, manual reference number, or case..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by applicant name, email, manual reference number, or case category..."
-              className="w-full pl-10 pr-4 py-2 text-xs rounded-xl border border-slate-200 focus:ring-2 focus:ring-sky-500"
+              className="w-full pl-9 pr-4 py-2 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
 
-          <div className="flex items-center gap-2 w-full md:w-auto">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Region Filter */}
+            <select
+              value={regionFilter}
+              onChange={(e) => setRegionFilter(e.target.value)}
+              className="px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            >
+              <option value="all">All Regions</option>
+              <option value="unassigned">⚠️ Unassigned Region</option>
+              {regions.map((r) => (
+                <option key={r.id} value={String(r.id)}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+
+            {/* Status Filter */}
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-700 font-medium"
+              className="px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             >
               <option value="all">All Payment Statuses</option>
               <option value="pending">Pending</option>
               <option value="under_review">Under Review</option>
-              <option value="completed">Completed / Paid</option>
+              <option value="completed">Completed</option>
               <option value="failed">Failed</option>
-              <option value="cancelled">Cancelled</option>
             </select>
 
+            {/* Active state filter */}
             <select
               value={activeFilter}
               onChange={(e) => setActiveFilter(e.target.value)}
-              className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-700 font-medium"
+              className="px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             >
-              <option value="all">All Accounts</option>
+              <option value="all">All Records</option>
               <option value="1">Active Only</option>
               <option value="0">Inactive Only</option>
             </select>
           </div>
         </div>
 
-        {/* Clients Table */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        {/* Client Records Table */}
+        <div className="bg-white rounded-xl border border-slate-200/80 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[11px]">
+            <table className="w-full text-left text-xs text-slate-600">
+              <thead className="bg-slate-50 text-[11px] uppercase font-bold text-slate-500 tracking-wider border-b border-slate-200">
                 <tr>
-                  <th className="py-3 px-6 font-bold">Applicant</th>
-                  <th className="py-3 px-6 font-bold">Reference Number</th>
-                  <th className="py-3 px-6 font-bold">Case Category</th>
-                  <th className="py-3 px-6 font-bold">Assigned Fee</th>
-                  <th className="py-3 px-6 font-bold">Payment Status</th>
-                  <th className="py-3 px-6 font-bold">Account</th>
-                  <th className="py-3 px-6 font-bold text-right">Actions</th>
+                  <th className="py-3 px-6">Applicant Details</th>
+                  <th className="py-3 px-6">Reference Number</th>
+                  <th className="py-3 px-6">Assigned Region</th>
+                  <th className="py-3 px-6">Visa Case Category</th>
+                  <th className="py-3 px-6">Case Status</th>
+                  <th className="py-3 px-6">Account</th>
+                  <th className="py-3 px-6 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 font-medium">
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-500">
-                      Loading consular client records...
+                    <td colSpan={7} className="py-12 text-center text-slate-400">
+                      Loading consular client database...
                     </td>
                   </tr>
                 ) : clients.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-500">
-                      No client records match the current filters.
+                    <td colSpan={7} className="py-12 text-center text-slate-400">
+                      No matching applicant records found.
                     </td>
                   </tr>
                 ) : (
                   clients.map((c) => (
-                    <tr key={c.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3 px-6">
+                    <tr key={c.id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 px-6">
                         <div className="flex items-center gap-3">
                           {c.photo_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
                               src={c.photo_url}
                               alt={c.full_name}
-                              className="w-9 h-9 rounded-full object-cover border border-slate-200"
+                              className="w-8 h-8 rounded-full object-cover border border-slate-200"
                             />
                           ) : (
-                            <div className="w-9 h-9 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center font-bold text-xs">
-                              {c.full_name.charAt(0)}
+                            <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
+                              <User className="w-4 h-4" />
                             </div>
                           )}
                           <div>
                             <div className="font-bold text-slate-900">{c.full_name}</div>
-                            <div className="text-[11px] text-slate-500">{c.email}</div>
+                            <div className="text-[11px] text-slate-400">{c.email}</div>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3 px-6">
-                        <span className="font-mono font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200">
+                      <td className="py-3.5 px-6">
+                        <span className="font-mono font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 tracking-wide">
                           {c.reference_number}
                         </span>
-                        <span className="block text-[10px] text-slate-400 mt-0.5">Manual Entry</span>
                       </td>
-                      <td className="py-3 px-6 text-slate-700 font-medium max-w-xs truncate">
+                      <td className="py-3.5 px-6">
+                        {c.region_name ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-semibold bg-sky-50 text-sky-800 border border-sky-200">
+                            <Globe className="w-3 h-3 text-sky-600" />
+                            {c.region_name}
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+                            title="No region assigned to this client"
+                          >
+                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            No region assigned
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-6 text-slate-700 max-w-xs truncate">
                         {c.case_category}
                       </td>
-                      <td className="py-3 px-6 font-bold text-slate-900 text-sm">
-                        {(c.amount_cents / 100).toLocaleString('en-US', {
-                          style: 'currency',
-                          currency: 'EUR',
-                        })}
-                      </td>
-                      <td className="py-3 px-6">
+                      <td className="py-3.5 px-6">
                         {getStatusBadge(c.payment_status)}
                       </td>
-                      <td className="py-3 px-6">
+                      <td className="py-3.5 px-6">
                         {c.is_active === 1 ? (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -416,8 +443,16 @@ export default function AdminClientsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-6 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="py-3.5 px-6 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Link
+                            href={`/admin/invoices?clientId=${c.id}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded text-sky-700 hover:bg-sky-50 border border-transparent hover:border-sky-200 transition"
+                            title="View / Create Invoices for Applicant"
+                          >
+                            <Receipt className="w-3.5 h-3.5" />
+                            Invoices
+                          </Link>
                           <button
                             onClick={() => openEditModal(c)}
                             className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg transition-colors"
@@ -453,7 +488,7 @@ export default function AdminClientsPage() {
                   {modalMode === 'create' ? 'Create New Client Record' : 'Edit Client Record'}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  All reference numbers must be manually assigned by the administrator.
+                  Reference numbers are manually assigned. Fee schedules and invoices are managed independently in Invoices.
                 </p>
               </div>
               <button onClick={() => setModalMode(null)} className="text-slate-400 hover:text-slate-600">
@@ -501,29 +536,18 @@ export default function AdminClientsPage() {
                   />
                 </div>
                 <div>
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
-                    Client Profile Photograph
-                  </span>
+                  <h4 className="text-xs font-bold text-slate-800">Biometric Passport Photo</h4>
                   <p className="text-[11px] text-slate-500">
-                    PNG, JPG, or WEBP up to 2MB. Optional official portrait.
+                    PNG, JPG, or WEBP up to 5MB. Stored persistently in secure storage.
                   </p>
-                  {photoUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setPhotoUrl(null)}
-                      className="text-[11px] text-red-600 font-semibold hover:underline mt-1"
-                    >
-                      Remove Photo
-                    </button>
-                  )}
                 </div>
               </div>
 
-              {/* Row 1: Name and Email */}
+              {/* Row 1: Full Name and Email */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Full Name *
+                    Full Legal Name *
                   </label>
                   <input
                     type="text"
@@ -537,20 +561,20 @@ export default function AdminClientsPage() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Applicant Email *
+                    Email Address *
                   </label>
                   <input
                     type="email"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="e.g. elena.rostova@example.com"
+                    placeholder="applicant@example.com"
                     className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:ring-2 focus:ring-sky-500"
                   />
                 </div>
               </div>
 
-              {/* Row 2: Manually Assigned Reference Number & Amount */}
+              {/* Row 2: Manually Assigned Reference Number & Configurable Region */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
@@ -573,22 +597,23 @@ export default function AdminClientsPage() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Assigned Fee in EUR (€) *
+                    Configurable Region
                   </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">
-                      €
-                    </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      required
-                      value={amountEur}
-                      onChange={(e) => setAmountEur(e.target.value)}
-                      placeholder="850.00"
-                      className="w-full pl-7 pr-3 py-2 text-xs font-bold rounded-xl border border-slate-200 focus:ring-2 focus:ring-sky-500"
-                    />
-                  </div>
+                  <select
+                    value={regionId}
+                    onChange={(e) => setRegionId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:ring-2 focus:ring-sky-500 bg-white"
+                  >
+                    <option value="">-- No Region Assigned --</option>
+                    {regions.map((r) => (
+                      <option key={r.id} value={String(r.id)}>
+                        {r.name} {r.code ? `(${r.code})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">
+                    Displays on the client's branded loading screen upon sign-in.
+                  </span>
                 </div>
               </div>
 
@@ -610,7 +635,7 @@ export default function AdminClientsPage() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Payment Status
+                    Consular Payment Status
                   </label>
                   <select
                     value={paymentStatus}
@@ -642,7 +667,7 @@ export default function AdminClientsPage() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Payment Instructions Displayed to Client
+                  General Instructions Displayed to Client
                 </label>
                 <textarea
                   rows={2}
@@ -668,15 +693,15 @@ export default function AdminClientsPage() {
               </div>
 
               {/* Toggles */}
-              <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-6 text-xs">
+              <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row gap-4">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={isActive}
                     onChange={(e) => setIsActive(e.target.checked)}
-                    className="w-4 h-4 text-sky-600 rounded-sm focus:ring-sky-500"
+                    className="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
                   />
-                  <span className="font-semibold text-slate-800">Account Active (Allows Login)</span>
+                  <span className="text-xs font-semibold text-slate-700">Account Active</span>
                 </label>
 
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -684,26 +709,28 @@ export default function AdminClientsPage() {
                     type="checkbox"
                     checked={canClientEditPhoto}
                     onChange={(e) => setCanClientEditPhoto(e.target.checked)}
-                    className="w-4 h-4 text-sky-600 rounded-sm focus:ring-sky-500"
+                    className="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
                   />
-                  <span className="font-semibold text-slate-800">Client Can Edit Photo</span>
+                  <span className="text-xs font-semibold text-slate-700">
+                    Allow Applicant Photo Uploads
+                  </span>
                 </label>
               </div>
 
-              <div className="pt-4 flex justify-end gap-2 border-t border-slate-100">
+              <div className="pt-4 border-t border-slate-100 flex justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={() => setModalMode(null)}
-                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50"
+                  className="px-4 py-2 text-xs font-semibold rounded-lg text-slate-600 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={formSubmitting}
-                  className="px-6 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md shadow-red-600/20 disabled:opacity-50"
+                  className="px-5 py-2 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition disabled:opacity-50"
                 >
-                  {formSubmitting ? 'Saving Record...' : modalMode === 'create' ? 'Create Client' : 'Save Changes'}
+                  {formSubmitting ? 'Saving...' : modalMode === 'create' ? 'Create Client' : 'Save Changes'}
                 </button>
               </div>
             </form>
@@ -713,27 +740,29 @@ export default function AdminClientsPage() {
 
       {/* Delete Confirmation Modal */}
       {deleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 border border-slate-200 shadow-xl space-y-4">
-            <div className="flex items-center gap-3 text-red-600">
-              <AlertTriangle className="w-6 h-6" />
-              <h3 className="text-base font-bold text-slate-900">Confirm Deletion</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 border border-slate-200 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
             </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Are you sure you want to permanently delete this client record? All associated payment histories and access tokens will be removed.
-            </p>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="text-center">
+              <h3 className="text-base font-bold text-slate-900">Delete Client Record</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Are you sure you want to delete this applicant? This action cannot be reversed.
+              </p>
+            </div>
+            <div className="flex gap-2 pt-2">
               <button
                 onClick={() => setDeleteId(null)}
-                className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600"
+                className="flex-1 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
               >
                 Cancel
               </button>
               <button
-                onClick={() => handleDeleteClient(deleteId)}
-                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold"
+                onClick={handleDeleteClient}
+                className="flex-1 py-2 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700"
               >
-                Delete Client
+                Confirm Delete
               </button>
             </div>
           </div>

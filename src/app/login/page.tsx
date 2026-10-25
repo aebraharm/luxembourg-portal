@@ -21,6 +21,7 @@ export default function ClientLoginPage() {
 
   const [email, setEmail] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
+  const [clientRegion, setClientRegion] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showLoadingScreen, setShowLoadingScreen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +78,14 @@ export default function ClientLoginPage() {
         return;
       }
 
-      // Successful login -> trigger dedicated multi-step loading screen
+      // Successful login -> capture actual region from server response
+      if (data.client?.region) {
+        setClientRegion(data.client.region);
+      } else {
+        setClientRegion(null);
+      }
+
+      // Trigger dedicated region-specific loading screen
       setShowLoadingScreen(true);
     } catch (err: any) {
       setLoading(false);
@@ -94,11 +102,12 @@ export default function ClientLoginPage() {
   if (showLoadingScreen) {
     return (
       <LoadingScreen
-        title="Accessing Confidential Case File"
+        title="Preparing your client portal..."
         description={`Establishing 256-bit secure session for Reference: ${referenceNumber.toUpperCase()}`}
         agencyName={branding.agency_name}
         tagline={branding.tagline}
         logoUrl={branding.logo_url}
+        region={clientRegion}
         currentStep={1}
         totalSteps={4}
         stepName="Client Authentication & Verification"
