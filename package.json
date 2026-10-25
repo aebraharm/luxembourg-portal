@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3000",
     "db:migrate": "npx tsx scripts/migrate.ts",
-    "test": "npx tsx scripts/test-runner.ts",
+    "test": "npx tsx scripts/test-runner.ts && npx tsx scripts/test-production-config.ts",
+    "test:prod": "npx tsx scripts/test-production-config.ts",
     "test:e2e": "npx tsx scripts/e2e-scenario-test.ts"
   },
   "dependencies": {

@@ -62,10 +62,11 @@ The application is fully architected for Netlify's serverless environment, utili
 
 ### 3. Environment Variables to Configure in Netlify
 
-In your Netlify team dashboard, navigate to **Site configuration > Environment variables** and add:
+In your Netlify team dashboard, navigate to **Site configuration > Environment variables** (ensure scope includes **Functions** and **Builds**) and add:
 
 ```env
-# Database connection (Turso Managed libSQL)
+# Database connection (Turso Managed libSQL) - REQUIRED in production
+# URL must begin with libsql://, https://, or http://
 TURSO_DATABASE_URL=libsql://your-database-name.turso.io
 TURSO_AUTH_TOKEN=your-turso-jwt-auth-token-here
 
@@ -79,6 +80,12 @@ INITIAL_ADMIN_PASSWORD=replace-with-a-strong-initial-bootstrap-password
 NODE_ENV=production
 NEXT_PUBLIC_APP_URL=https://your-custom-domain.netlify.app
 ```
+
+> **Note on Netlify Serverless Filesystem & Resolution of `ENOENT /var/task/data`:**
+> Netlify runs Next.js server-side rendering and API routes on AWS Lambda serverless containers with read-only root filesystems (`/var/task`). 
+> Any attempt to create local folders like `/var/task/data` causes `ENOENT: no such file or directory, mkdir '/var/task/data'`.
+> The platform is configured to strictly enforce remote Turso libSQL connectivity in production (`NODE_ENV === 'production'` or `NETLIFY=true`). 
+> If `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is missing or points to a local `file:`, the server fails fast with a clean, descriptive configuration error and never attempts filesystem writes. Local SQLite file creation is restricted solely to offline development environments.
 
 ### 4. Step-by-Step Repository Connection to Netlify
 

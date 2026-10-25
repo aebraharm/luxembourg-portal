@@ -4,7 +4,7 @@
  * Usage: npx tsx scripts/migrate.ts
  */
 
-import { getDb, ensureDbInit, queryOne, queryAll } from '../src/lib/db';
+import { getDatabaseConfig, ensureDbInit, queryOne, queryAll } from '../src/lib/db';
 
 async function runMigration() {
   console.log('\n======================================================');
@@ -12,11 +12,10 @@ async function runMigration() {
   console.log('======================================================\n');
 
   try {
-    const isRemote = Boolean(process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL);
-    const targetUrl = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL || 'file:data/portal.sqlite';
+    const config = getDatabaseConfig();
 
-    console.log(`Target Database: ${isRemote ? 'Managed Distributed Cluster (Turso/libSQL)' : 'Local File Storage'}`);
-    console.log(`Endpoint URL:    ${targetUrl.replace(/:[^:@]+@/, ':***@')}`);
+    console.log(`Target Database: ${config.isRemote ? 'Managed Distributed Cluster (Turso/libSQL)' : 'Local File Storage'}`);
+    console.log(`Endpoint URL:    ${config.url ? config.url.replace(/:[^:@]+@/, ':***@') : '(none)'}`);
 
     // Step 1: Ensure database schema is initialized
     console.log('\n[1/4] Applying schema migrations & table structures...');
@@ -34,7 +33,7 @@ async function runMigration() {
     if (admin) {
       console.log(`  ✓ Administrator active: ${admin.email} (Role: ${admin.role}, MustChangePassword: ${admin.must_change_password === 1})`);
     } else {
-      console.warn('  ⚠️ No administrator found. Initializing bootstrap...');
+      console.warn('  ⚠️ No administrator found.');
     }
 
     // Step 3: Verify Client Records & Manually Assigned Reference Numbers
