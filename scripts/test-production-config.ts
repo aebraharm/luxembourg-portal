@@ -4,7 +4,7 @@
  * operations, and never throws ENOENT / attempts mkdir('/var/task/data').
  */
 
-import { getDb, getDatabaseConfig, resetDbClientForTesting } from '../src/lib/db';
+import { getDb, getDatabaseConfig, resetDbClientForTesting, ensureDbInit, queryOne } from '../src/lib/db';
 import fs from 'node:fs';
 
 let passedTests = 0;
@@ -113,12 +113,12 @@ async function runRegressionTests() {
     console.log('\n--- Test 4: Trims whitespace and wrapping quotes from environment variables ---');
     (process.env as any).NODE_ENV = 'production';
     process.env.TURSO_DATABASE_URL = '   "libsql://sanitized-db.turso.io"   \n';
-    process.env.TURSO_AUTH_TOKEN = '  \'eyToken12345\'  \r\n';
+    process.env.TURSO_AUTH_TOKEN = '  \'eySecretToken12345\'  \r\n';
     resetDbClientForTesting();
 
     const config = getDatabaseConfig();
     assert(config.url === 'libsql://sanitized-db.turso.io', 'Database URL is correctly trimmed and unquoted');
-    assert(config.authToken === 'eyToken12345', 'Auth token is correctly trimmed and unquoted');
+    assert(config.authToken === 'eySecretToken12345', 'Auth token is correctly trimmed and unquoted');
     assert(config.isRemote === true, 'Recognized as remote managed database');
 
     const client = getDb();
@@ -128,7 +128,7 @@ async function runRegressionTests() {
     // Test 5: Netlify Runtime Detection
     // -------------------------------------------------------------------------
     console.log('\n--- Test 5: Netlify serverless environment detection ---');
-    (process.env as any).NODE_ENV = 'development';
+    (process.env as any).NODE_ENV = 'development'; // even if NODE_ENV is development, NETLIFY=true triggers serverless safety
     process.env.NETLIFY = 'true';
     delete process.env.TURSO_DATABASE_URL;
     delete process.env.TURSO_AUTH_TOKEN;
@@ -148,11 +148,59 @@ async function runRegressionTests() {
     );
 
     // -------------------------------------------------------------------------
-    // Test 6: Development Fallback Works Offline
+    // Test 6: AWS Lambda / Netlify Task Root Detection
     // -------------------------------------------------------------------------
-    console.log('\n--- Test 6: Development fallback preserved for local testing ---');
+    console.log('\n--- Test 6: AWS Lambda / Task Root container runtime detection ---');
+    delete process.env.NETLIFY;
+    process.env.LAMBDA_TASK_ROOT = '/var/task';
+    delete process.env.TURSO_DATABASE_URL;
+    delete process.env.TURSO_AUTH_TOKEN;
+    resetDbClientForTesting();
+
+    let err6: Error | null = null;
+    try {
+      getDb();
+    } catch (e: any) {
+      err6 = e;
+    }
+
+    assert(err6 !== null, 'getDb() detects LAMBDA_TASK_ROOT and disables filesystem SQLite');
+    assert(
+      err6!.message.includes('TURSO_DATABASE_URL is not configured'),
+      'Requires TURSO_DATABASE_URL on Lambda runtime'
+    );
+
+    // -------------------------------------------------------------------------
+    // Test 7: Secret Leak Prevention in Error Messages
+    // -------------------------------------------------------------------------
+    console.log('\n--- Test 7: Zero token/secret leakage in configuration errors ---');
+    (process.env as any).NODE_ENV = 'production';
+    delete process.env.LAMBDA_TASK_ROOT;
+    process.env.TURSO_DATABASE_URL = 'invalid-protocol://local.test';
+    process.env.TURSO_AUTH_TOKEN = 'SUPER_CONFIDENTIAL_TOKEN_VALUE';
+    resetDbClientForTesting();
+
+    let err7: Error | null = null;
+    try {
+      getDb();
+    } catch (e: any) {
+      err7 = e;
+    }
+
+    assert(err7 !== null, 'getDb() rejects invalid protocol');
+    assert(
+      !err7!.message.includes('SUPER_CONFIDENTIAL_TOKEN_VALUE'),
+      'Error message does not leak auth token value'
+    );
+
+    // -------------------------------------------------------------------------
+    // Test 8: Development Fallback Preserved
+    // -------------------------------------------------------------------------
+    console.log('\n--- Test 8: Development fallback preserved for local testing ---');
     (process.env as any).NODE_ENV = 'development';
     delete process.env.NETLIFY;
+    delete process.env.LAMBDA_TASK_ROOT;
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
     delete process.env.TURSO_DATABASE_URL;
     delete process.env.TURSO_AUTH_TOKEN;
     resetDbClientForTesting();
