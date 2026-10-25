@@ -72,6 +72,10 @@ export async function POST(request: Request) {
 
     return response;
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Login error' }, { status: 500 });
+    console.error('[ADMIN_LOGIN_ERROR]', err?.message || err);
+    return NextResponse.json(
+      { error: err?.message || 'Administrative authentication service unavailable.' },
+      { status: 500 }
+    );
   }
 }

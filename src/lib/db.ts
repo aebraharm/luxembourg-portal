@@ -6,33 +6,127 @@ import bcrypt from 'bcryptjs';
 let dbClient: Client | null = null;
 let initPromise: Promise<void> | null = null;
 
+export interface DatabaseConfig {
+  isProduction: boolean;
+  isNetlify: boolean;
+  url: string;
+  authToken: string;
+  isRemote: boolean;
+}
+
+/**
+ * Parses and sanitizes database configuration from environment variables.
+ * Trims values and removes wrapping quotes.
+ */
+export function getDatabaseConfig(): DatabaseConfig {
+  const isNetlify = Boolean(
+    process.env.NETLIFY ||
+    process.env.NETLIFY_BLOBS_CONTEXT ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT
+  );
+  const isProduction = process.env.NODE_ENV === 'production' || isNetlify;
+
+  const rawUrl =
+    process.env.TURSO_DATABASE_URL ||
+    process.env.LIBSQL_DATABASE_URL ||
+    process.env.DATABASE_URL ||
+    '';
+  const rawToken =
+    process.env.TURSO_AUTH_TOKEN ||
+    process.env.LIBSQL_AUTH_TOKEN ||
+    process.env.DATABASE_AUTH_TOKEN ||
+    '';
+
+  const url = rawUrl.trim().replace(/^['"]|['"]$/g, '');
+  const authToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
+
+  const isRemote = Boolean(
+    url &&
+    (url.startsWith('libsql://') ||
+     url.startsWith('https://') ||
+     url.startsWith('http://'))
+  );
+
+  return { isProduction, isNetlify, url, authToken, isRemote };
+}
+
+/**
+ * Resets the cached database client and initialization promise (used in testing).
+ */
+export function resetDbClientForTesting(): void {
+  dbClient = null;
+  initPromise = null;
+}
+
+/**
+ * Obtains or creates the active database client.
+ * In production or on Netlify, strictly requires a remote Turso/libSQL database.
+ * Never attempts filesystem operations or local SQLite fallback in production.
+ */
 export function getDb(): Client {
   if (!dbClient) {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const remoteUrl = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL;
-    const authToken = process.env.TURSO_AUTH_TOKEN;
+    const config = getDatabaseConfig();
 
-    if (remoteUrl && !remoteUrl.startsWith('file:')) {
-      // Managed remote database (Turso / libSQL over HTTPS)
-      dbClient = createClient({
-        url: remoteUrl,
-        authToken: authToken || undefined,
-      });
-    } else {
-      // Local SQLite file for development / testing
-      let dbPath = remoteUrl || 'file:data/portal.sqlite';
-      if (dbPath.startsWith('file:')) {
-        const filePath = dbPath.replace(/^file:/, '');
-        const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
-        const dir = path.dirname(resolvedPath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        dbPath = `file:${resolvedPath}`;
+    if (config.isProduction) {
+      // Production must strictly use a remote managed database
+      if (!config.url) {
+        throw new Error(
+          'Production Database Configuration Error: TURSO_DATABASE_URL is not configured. Please add TURSO_DATABASE_URL in Netlify Environment Variables (scoped to Functions).'
+        );
       }
-      dbClient = createClient({ url: dbPath });
+
+      if (config.url.startsWith('file:') || !config.isRemote) {
+        throw new Error(
+          'Production Database Configuration Error: Local filesystem SQLite is disabled in serverless production. TURSO_DATABASE_URL must start with libsql:// or https://.'
+        );
+      }
+
+      if (!config.authToken) {
+        throw new Error(
+          'Production Database Configuration Error: TURSO_AUTH_TOKEN is not configured. Please add TURSO_AUTH_TOKEN in Netlify Environment Variables (scoped to Functions).'
+        );
+      }
+
+      dbClient = createClient({
+        url: config.url,
+        authToken: config.authToken,
+      });
+      return dbClient;
     }
+
+    // Non-production (local development and test suites)
+    if (config.isRemote) {
+      dbClient = createClient({
+        url: config.url,
+        authToken: config.authToken || undefined,
+      });
+      return dbClient;
+    }
+
+    // Local SQLite fallback strictly for offline development/testing
+    let localPath = config.url || 'file:data/portal.sqlite';
+    if (localPath.startsWith('file:')) {
+      const filePath = localPath.replace(/^file:/, '');
+      const resolvedPath = path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(process.cwd(), filePath);
+      const dir = path.dirname(resolvedPath);
+
+      // Only attempt mkdir in non-production, non-serverless environments
+      if (!config.isNetlify && !fs.existsSync(dir)) {
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+        } catch (err: any) {
+          console.warn('Local directory creation notice:', err.message);
+        }
+      }
+      localPath = `file:${resolvedPath}`;
+    }
+
+    dbClient = createClient({ url: localPath });
   }
+
   return dbClient;
 }
 
@@ -45,8 +139,9 @@ export async function ensureDbInit(): Promise<void> {
 
 async function initDatabaseSchema(): Promise<void> {
   const client = getDb();
+  const config = getDatabaseConfig();
 
-  // Create tables idempotently
+  // Create tables idempotently (safe: CREATE TABLE IF NOT EXISTS preserves all existing data)
   await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS administrators (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,15 +237,13 @@ async function initDatabaseSchema(): Promise<void> {
     );
   `);
 
-  // Seed default administrator if not present
-  const adminCheck = await client.execute({
-    sql: 'SELECT id FROM administrators WHERE email = ?',
-    args: ['portal@gmail.com'],
-  });
-
+  // Bootstrap initial administrator ONLY if the administrators table is completely empty.
+  // Never re-seed or overwrite existing production administrators.
+  const adminCountRs = await client.execute('SELECT COUNT(*) as count FROM administrators');
+  const adminCount = Number(adminCountRs.rows[0].count);
   const now = new Date().toISOString();
 
-  if (adminCheck.rows.length === 0) {
+  if (adminCount === 0) {
     const defaultPassword = process.env.INITIAL_ADMIN_PASSWORD || '12345678';
     const salt = bcrypt.genSaltSync(10);
     const hash = bcrypt.hashSync(defaultPassword, salt);
@@ -168,58 +261,61 @@ async function initDatabaseSchema(): Promise<void> {
     });
   }
 
-  // Seed sample clients if clients table is empty
-  const clientsCountRs = await client.execute('SELECT COUNT(*) as count FROM clients');
-  const count = Number(clientsCountRs.rows[0].count);
+  // Seed sample clients ONLY in local development/testing when table is empty.
+  // Never automatically seed sample clients into production.
+  if (!config.isProduction) {
+    const clientsCountRs = await client.execute('SELECT COUNT(*) as count FROM clients');
+    const clientCount = Number(clientsCountRs.rows[0].count);
 
-  if (count === 0) {
-    await client.execute({
-      sql: `INSERT INTO clients (
-        full_name, email, reference_number, photo_url, case_category, case_details,
-        amount_cents, payment_status, payment_instructions, admin_notes, is_active,
-        can_client_edit_photo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        'Elena Rostova',
-        'elena.rostova@example.com',
-        'LUX-VISA-2026-8812',
-        null,
-        'Work Visa (EU Blue Card - Luxembourg)',
-        'Application under Grand-Ducal Regulation for Highly Qualified Employment. Consular file ref #LU-HQ-9902.',
-        85000,
-        'pending',
-        'Please settle the official government consular application processing fee within 14 calendar days of issuance. Payment confirms submission for consular review.',
-        'Verified by Consular Liaison Office. Awaiting administrative fee remittance.',
-        1,
-        1,
-        now,
-        now,
-      ],
-    });
+    if (clientCount === 0) {
+      await client.execute({
+        sql: `INSERT INTO clients (
+          full_name, email, reference_number, photo_url, case_category, case_details,
+          amount_cents, payment_status, payment_instructions, admin_notes, is_active,
+          can_client_edit_photo, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          'Elena Rostova',
+          'elena.rostova@example.com',
+          'LUX-VISA-2026-8812',
+          null,
+          'Work Visa (EU Blue Card - Luxembourg)',
+          'Application under Grand-Ducal Regulation for Highly Qualified Employment. Consular file ref #LU-HQ-9902.',
+          85000,
+          'pending',
+          'Please settle the official government consular application processing fee within 14 calendar days of issuance. Payment confirms submission for consular review.',
+          'Verified by Consular Liaison Office. Awaiting administrative fee remittance.',
+          1,
+          1,
+          now,
+          now,
+        ],
+      });
 
-    await client.execute({
-      sql: `INSERT INTO clients (
-        full_name, email, reference_number, photo_url, case_category, case_details,
-        amount_cents, payment_status, payment_instructions, admin_notes, is_active,
-        can_client_edit_photo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        'Marcus Vance',
-        'marcus.vance@example.com',
-        'LUX-VISA-2026-9943',
-        null,
-        'Long-Term Residence Permit & Family Reunification',
-        'Application for Long-Term Residence and dependent spouse sponsorship. File ref #LU-FR-1148.',
-        120000,
-        'pending',
-        'Consular processing and biometric registration processing fee for primary applicant and accompanying family member.',
-        'All biometric appointments scheduled pending fee settlement confirmation.',
-        1,
-        1,
-        now,
-        now,
-      ],
-    });
+      await client.execute({
+        sql: `INSERT INTO clients (
+          full_name, email, reference_number, photo_url, case_category, case_details,
+          amount_cents, payment_status, payment_instructions, admin_notes, is_active,
+          can_client_edit_photo, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          'Marcus Vance',
+          'marcus.vance@example.com',
+          'LUX-VISA-2026-9943',
+          null,
+          'Long-Term Residence Permit & Family Reunification',
+          'Application for Long-Term Residence and dependent spouse sponsorship. File ref #LU-FR-1148.',
+          120000,
+          'pending',
+          'Consular processing and biometric registration processing fee for primary applicant and accompanying family member.',
+          'All biometric appointments scheduled pending fee settlement confirmation.',
+          1,
+          1,
+          now,
+          now,
+        ],
+      });
+    }
   }
 }
 

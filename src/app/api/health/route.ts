@@ -1,22 +1,31 @@
 import { NextResponse } from 'next/server';
-import { queryOne, getDb } from '@/lib/db';
+import { queryOne, getDatabaseConfig } from '@/lib/db';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export async function GET() {
   try {
-    const isRemote = Boolean(process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL);
-    const dbType = isRemote ? 'Managed Distributed libSQL / Turso Cluster' : 'Local libSQL File Engine';
+    const config = getDatabaseConfig();
+    const dbType = config.isRemote
+      ? 'Managed Distributed libSQL / Turso Cluster'
+      : 'Local libSQL File Engine';
 
     // Verify live DB connectivity
     const ping = await queryOne('SELECT 1 as alive');
     if (!ping) throw new Error('Database ping query returned no response');
 
     let fileSizeKb = 0;
-    const dbPath = path.resolve(process.cwd(), 'data/portal.sqlite');
-    if (!isRemote && fs.existsSync(dbPath)) {
-      const stats = fs.statSync(dbPath);
-      fileSizeKb = Math.round(stats.size / 1024);
+    // Only inspect local filesystem size when running locally in development
+    if (!config.isRemote && !config.isNetlify && !config.isProduction) {
+      try {
+        const dbPath = path.resolve(process.cwd(), 'data/portal.sqlite');
+        if (fs.existsSync(dbPath)) {
+          const stats = fs.statSync(dbPath);
+          fileSizeKb = Math.round(stats.size / 1024);
+        }
+      } catch {
+        // Safe ignore
+      }
     }
 
     const clientRow = await queryOne<{ c: number }>('SELECT COUNT(*) as c FROM clients');
@@ -25,12 +34,7 @@ export async function GET() {
     const auditRow = await queryOne<{ c: number }>('SELECT COUNT(*) as c FROM audit_logs');
     const assetsRow = await queryOne<{ c: number }>('SELECT COUNT(*) as c FROM uploaded_assets');
 
-    const storageBackend = Boolean(
-      process.env.NETLIFY ||
-      process.env.NETLIFY_BLOBS_CONTEXT ||
-      process.env.SITE_ID ||
-      process.env.NETLIFY_SITE_ID
-    )
+    const storageBackend = config.isNetlify
       ? 'Netlify Blobs (Edge Object Storage)'
       : 'Managed Database Asset Storage';
 

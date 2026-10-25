@@ -101,6 +101,10 @@ export async function POST(request: Request) {
 
     return response;
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Authentication failed.' }, { status: 500 });
+    console.error('[CLIENT_LOGIN_ERROR]', err?.message || err);
+    return NextResponse.json(
+      { error: err?.message || 'Authentication service temporarily unavailable.' },
+      { status: 500 }
+    );
   }
 }
