@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload, AdminSessionPayload } from '@/lib/auth';
 import { queryOne, execute } from '@/lib/db';
-import { PaymentRecord, ClientRecord } from '@/lib/types';
+import { PaymentRecord } from '@/lib/types';
 import { logAudit } from '@/lib/audit';
 
 export async function GET(
@@ -25,10 +25,16 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const payment = await queryOne<PaymentRecord & { case_category?: string }>(
-    `SELECT p.*, c.full_name as client_name, c.email as client_email, c.case_category
+  const payment = await queryOne<PaymentRecord & { case_category?: string; invoice_number?: string }>(
+    `SELECT
+      p.*,
+      c.full_name as client_name,
+      c.email as client_email,
+      c.case_category,
+      inv.invoice_number as invoice_number
      FROM payments p
      LEFT JOIN clients c ON p.client_id = c.id
+     LEFT JOIN invoices inv ON p.invoice_id = inv.id
      WHERE p.id = ?`,
     [paymentId]
   );
@@ -101,6 +107,22 @@ export async function PUT(
       [status, now, payment.client_id]
     );
 
+    // Update associated invoice status if present
+    if (payment.invoice_id) {
+      if (status === 'completed') {
+        await execute(
+          "UPDATE invoices SET status = 'paid', updated_at = ? WHERE id = ?",
+          [now, payment.invoice_id]
+        );
+      } else if (status === 'failed' || status === 'cancelled') {
+        // Revert invoice back to unpaid if it was payment_pending
+        await execute(
+          "UPDATE invoices SET status = 'unpaid', updated_at = ? WHERE id = ? AND status = 'payment_pending'",
+          [now, payment.invoice_id]
+        );
+      }
+    }
+
     await logAudit({
       actorType: 'admin',
       actorId: adminSession.adminId,
@@ -108,6 +130,7 @@ export async function PUT(
       action: 'RECONCILE_PAYMENT',
       details: {
         paymentId,
+        invoiceId: payment.invoice_id,
         previousStatus: payment.status,
         newStatus: status,
         adminNote: adminNote || '',

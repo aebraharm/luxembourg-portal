@@ -2,6 +2,7 @@ import { createClient, Client } from '@libsql/client';
 import path from 'node:path';
 import fs from 'node:fs';
 import bcrypt from 'bcryptjs';
+import { InvoiceStatus } from './types';
 
 let dbClient: Client | null = null;
 let initPromise: Promise<void> | null = null;
@@ -141,7 +142,7 @@ async function initDatabaseSchema(): Promise<void> {
   const client = getDb();
   const config = getDatabaseConfig();
 
-  // Create tables idempotently (safe: CREATE TABLE IF NOT EXISTS preserves all existing data)
+  // Create core tables idempotently (safe: CREATE TABLE IF NOT EXISTS preserves all existing data)
   await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS administrators (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +155,19 @@ async function initDatabaseSchema(): Promise<void> {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS regions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      code TEXT,
+      description TEXT DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_regions_name ON regions(name);
+    CREATE INDEX IF NOT EXISTS idx_regions_active ON regions(is_active);
+
     CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
@@ -162,18 +176,44 @@ async function initDatabaseSchema(): Promise<void> {
       photo_url TEXT,
       case_category TEXT NOT NULL,
       case_details TEXT NOT NULL DEFAULT '',
-      amount_cents INTEGER NOT NULL,
+      amount_cents INTEGER NOT NULL DEFAULT 0,
       payment_status TEXT NOT NULL DEFAULT 'pending',
       payment_instructions TEXT NOT NULL DEFAULT '',
       admin_notes TEXT NOT NULL DEFAULT '',
       is_active INTEGER NOT NULL DEFAULT 1,
       can_client_edit_photo INTEGER NOT NULL DEFAULT 1,
+      region_id INTEGER,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (region_id) REFERENCES regions(id) ON DELETE SET NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
     CREATE INDEX IF NOT EXISTS idx_clients_ref ON clients(reference_number);
+    CREATE INDEX IF NOT EXISTS idx_clients_region ON clients(region_id);
+
+    CREATE TABLE IF NOT EXISTS invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      invoice_number TEXT UNIQUE NOT NULL,
+      reason TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      issue_date TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'issued',
+      notes TEXT DEFAULT '',
+      admin_notes TEXT DEFAULT '',
+      replacement_invoice_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_invoices_client ON invoices(client_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
+    CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+    CREATE INDEX IF NOT EXISTS idx_invoices_due ON invoices(due_date);
 
     CREATE TABLE IF NOT EXISTS payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,6 +224,7 @@ async function initDatabaseSchema(): Promise<void> {
       currency TEXT NOT NULL DEFAULT 'EUR',
       status TEXT NOT NULL DEFAULT 'pending',
       mode TEXT NOT NULL DEFAULT 'demo',
+      invoice_id INTEGER,
       provider_ref TEXT,
       failure_reason TEXT,
       crypto_currency TEXT,
@@ -192,12 +233,14 @@ async function initDatabaseSchema(): Promise<void> {
       client_ip TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+      FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_payments_client ON payments(client_id);
     CREATE INDEX IF NOT EXISTS idx_payments_ref ON payments(reference_number);
     CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+    CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -237,6 +280,20 @@ async function initDatabaseSchema(): Promise<void> {
     );
   `);
 
+  // Backward-compatible schema evolution: ensure region_id exists on clients
+  try {
+    await client.execute('ALTER TABLE clients ADD COLUMN region_id INTEGER REFERENCES regions(id)');
+  } catch {
+    // Column already exists or created via initial DDL
+  }
+
+  // Backward-compatible schema evolution: ensure invoice_id exists on payments
+  try {
+    await client.execute('ALTER TABLE payments ADD COLUMN invoice_id INTEGER REFERENCES invoices(id)');
+  } catch {
+    // Column already exists or created via initial DDL
+  }
+
   // Bootstrap initial administrator ONLY if the administrators table is completely empty.
   // Never re-seed or overwrite existing production administrators.
   const adminCountRs = await client.execute('SELECT COUNT(*) as count FROM administrators');
@@ -261,6 +318,28 @@ async function initDatabaseSchema(): Promise<void> {
     });
   }
 
+  // Bootstrap default regions if regions table is empty
+  const regionsCountRs = await client.execute('SELECT COUNT(*) as count FROM regions');
+  const regionsCount = Number(regionsCountRs.rows[0].count);
+
+  if (regionsCount === 0) {
+    const defaultRegions = [
+      { name: 'Europe', code: 'EU', description: 'European Union, Schengen, and EEA applicant zone' },
+      { name: 'Africa', code: 'AF', description: 'African regional consular and diplomatic zone' },
+      { name: 'Asia-Pacific', code: 'APAC', description: 'Asia-Pacific relocation and talent acquisition territory' },
+      { name: 'North America', code: 'NA', description: 'North American consular and skilled visa corridor' },
+      { name: 'Other', code: 'OTH', description: 'International and special jurisdictional territories' },
+    ];
+
+    for (const r of defaultRegions) {
+      await client.execute({
+        sql: `INSERT INTO regions (name, code, description, is_active, created_at, updated_at)
+              VALUES (?, ?, ?, 1, ?, ?)`,
+        args: [r.name, r.code, r.description, now, now],
+      });
+    }
+  }
+
   // Seed sample clients ONLY in local development/testing when table is empty.
   // Never automatically seed sample clients into production.
   if (!config.isProduction) {
@@ -272,8 +351,8 @@ async function initDatabaseSchema(): Promise<void> {
         sql: `INSERT INTO clients (
           full_name, email, reference_number, photo_url, case_category, case_details,
           amount_cents, payment_status, payment_instructions, admin_notes, is_active,
-          can_client_edit_photo, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          can_client_edit_photo, region_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           'Elena Rostova',
           'elena.rostova@example.com',
@@ -287,6 +366,7 @@ async function initDatabaseSchema(): Promise<void> {
           'Verified by Consular Liaison Office. Awaiting administrative fee remittance.',
           1,
           1,
+          null,
           now,
           now,
         ],
@@ -296,8 +376,8 @@ async function initDatabaseSchema(): Promise<void> {
         sql: `INSERT INTO clients (
           full_name, email, reference_number, photo_url, case_category, case_details,
           amount_cents, payment_status, payment_instructions, admin_notes, is_active,
-          can_client_edit_photo, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          can_client_edit_photo, region_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           'Marcus Vance',
           'marcus.vance@example.com',
@@ -311,11 +391,142 @@ async function initDatabaseSchema(): Promise<void> {
           'All biometric appointments scheduled pending fee settlement confirmation.',
           1,
           1,
+          null,
           now,
           now,
         ],
       });
     }
+  }
+
+  // Backward compatibility migration: create initial invoices for existing clients who have fees but no invoices
+  const existingClientsWithFees = await client.execute(
+    `SELECT c.id, c.full_name, c.reference_number, c.case_category, c.amount_cents, c.payment_status, c.created_at
+     FROM clients c
+     WHERE c.amount_cents > 0
+       AND NOT EXISTS (SELECT 1 FROM invoices inv WHERE inv.client_id = c.id)`
+  );
+
+  const year = new Date().getFullYear();
+  for (const row of existingClientsWithFees.rows) {
+    const cId = Number(row.id);
+    const amountCents = Number(row.amount_cents);
+    const pStatus = String(row.payment_status);
+    const caseCat = String(row.case_category || 'Immigration Fee');
+    const invNumber = `INV-${year}-${String(cId).padStart(4, '0')}`;
+    const issueDate = String(row.created_at).split('T')[0] || new Date().toISOString().split('T')[0];
+    const dueDateObj = new Date();
+    dueDateObj.setDate(dueDateObj.getDate() + 14);
+    const dueDate = dueDateObj.toISOString().split('T')[0];
+
+    const invStatus: InvoiceStatus =
+      pStatus === 'completed'
+        ? 'paid'
+        : pStatus === 'under_review'
+        ? 'payment_pending'
+        : 'issued';
+
+    const insertResult = await client.execute({
+      sql: `INSERT INTO invoices (
+        client_id, invoice_number, reason, amount_cents, currency,
+        issue_date, due_date, status, notes, admin_notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'EUR', ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        cId,
+        invNumber,
+        `${caseCat} Consular Fee`,
+        amountCents,
+        issueDate,
+        dueDate,
+        invStatus,
+        'Statutory consular disbursement for visa processing.',
+        'Migrated from legacy client record fee schedule.',
+        now,
+        now,
+      ],
+    });
+
+    const newInvoiceId = insertResult.lastInsertRowid;
+    // Link any legacy payments belonging to this client to this invoice
+    if (newInvoiceId) {
+      await client.execute({
+        sql: 'UPDATE payments SET invoice_id = ? WHERE client_id = ? AND invoice_id IS NULL',
+        args: [newInvoiceId, cId],
+      });
+    }
+  }
+}
+
+/**
+ * Derives overdue status dynamically based on current date and payment state.
+ */
+export function deriveInvoiceStatus(status: InvoiceStatus, dueDate: string): InvoiceStatus {
+  if (status === 'issued' || status === 'unpaid') {
+    const today = new Date().toISOString().split('T')[0];
+    if (dueDate && dueDate < today) {
+      return 'overdue';
+    }
+  }
+  return status;
+}
+
+/**
+ * Validates permitted invoice status transitions on the server.
+ */
+export function isValidStatusTransition(from: InvoiceStatus, to: InvoiceStatus): boolean {
+  if (from === to) return true;
+
+  const validTransitions: Record<InvoiceStatus, InvoiceStatus[]> = {
+    draft: ['issued', 'cancelled'],
+    issued: ['unpaid', 'payment_pending', 'paid', 'overdue', 'cancelled'],
+    unpaid: ['payment_pending', 'paid', 'overdue', 'cancelled'],
+    payment_pending: ['paid', 'unpaid', 'issued', 'cancelled'],
+    overdue: ['payment_pending', 'paid', 'cancelled'],
+    paid: ['cancelled'], // Only controlled cancellation allowed for paid invoices
+    cancelled: [], // Terminal status
+  };
+
+  return (validTransitions[from] || []).includes(to);
+}
+
+/**
+ * Generates a safe, unique, sequential invoice number.
+ * Format: INV-YYYY-XXXX (e.g. INV-2026-0001)
+ */
+export async function generateInvoiceNumber(): Promise<string> {
+  await ensureDbInit();
+  const year = new Date().getFullYear();
+  const pattern = `INV-${year}-%`;
+
+  const client = getDb();
+  const rs = await client.execute({
+    sql: 'SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY id DESC LIMIT 1',
+    args: [pattern],
+  });
+
+  let nextSequence = 1;
+  if (rs.rows.length > 0) {
+    const lastNum = String(rs.rows[0].invoice_number);
+    const parts = lastNum.split('-');
+    if (parts.length === 3) {
+      const parsed = parseInt(parts[2], 10);
+      if (!isNaN(parsed)) {
+        nextSequence = parsed + 1;
+      }
+    }
+  }
+
+  // Ensure uniqueness
+  while (true) {
+    const candidate = `INV-${year}-${String(nextSequence).padStart(4, '0')}`;
+    const check = await client.execute({
+      sql: 'SELECT id FROM invoices WHERE invoice_number = ?',
+      args: [candidate],
+    });
+    if (check.rows.length === 0) {
+      return candidate;
+    }
+    nextSequence++;
   }
 }
 

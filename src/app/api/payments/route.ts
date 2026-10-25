@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, ClientSessionPayload, AdminSessionPayload } from '@/lib/auth';
-import { queryOne, queryAll, execute } from '@/lib/db';
+import { queryOne, queryAll, execute, deriveInvoiceStatus } from '@/lib/db';
 import { getPaymentMethodConfig } from '@/lib/settings';
 import { logAudit } from '@/lib/audit';
-import { ClientRecord, PaymentRecord } from '@/lib/types';
+import { ClientRecord, InvoiceRecord, PaymentRecord } from '@/lib/types';
 
 // Client creating a payment attempt
 export async function POST(request: Request) {
@@ -29,9 +29,64 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { method, cryptoCurrency, cryptoNetwork, cryptoTxHash } = body;
+    const { method, invoiceId: requestedInvoiceId, cryptoCurrency, cryptoNetwork, cryptoTxHash } = body;
     const now = new Date().toISOString();
     const pConfig = await getPaymentMethodConfig();
+
+    // Resolve target invoice
+    let targetInvoice: InvoiceRecord | null = null;
+    if (requestedInvoiceId) {
+      const parsedInvId = parseInt(String(requestedInvoiceId), 10);
+      if (!isNaN(parsedInvId)) {
+        targetInvoice = await queryOne<InvoiceRecord>(
+          'SELECT * FROM invoices WHERE id = ? AND client_id = ?',
+          [parsedInvId, client.id]
+        );
+        if (!targetInvoice) {
+          return NextResponse.json(
+            { error: 'Specified invoice not found or does not belong to your account.' },
+            { status: 404 }
+          );
+        }
+      }
+    } else {
+      // Find first payable invoice for this client
+      targetInvoice = await queryOne<InvoiceRecord>(
+        "SELECT * FROM invoices WHERE client_id = ? AND status IN ('issued', 'unpaid', 'overdue') ORDER BY id ASC LIMIT 1",
+        [client.id]
+      );
+    }
+
+    // Validate invoice eligibility if present
+    if (targetInvoice) {
+      const effectiveStatus = deriveInvoiceStatus(targetInvoice.status, targetInvoice.due_date);
+      if (effectiveStatus === 'paid') {
+        return NextResponse.json(
+          { error: 'This invoice has already been fully paid and verified.' },
+          { status: 400 }
+        );
+      }
+      if (effectiveStatus === 'cancelled') {
+        return NextResponse.json(
+          { error: 'This invoice has been cancelled and is no longer payable.' },
+          { status: 400 }
+        );
+      }
+      if (effectiveStatus === 'draft') {
+        return NextResponse.json(
+          { error: 'This invoice is currently in draft state and cannot be paid.' },
+          { status: 400 }
+        );
+      }
+      if (effectiveStatus === 'payment_pending') {
+        return NextResponse.json(
+          { error: 'A payment remittance for this invoice is already submitted and pending consular review.' },
+          { status: 400 }
+        );
+      }
+    }
+
+    const payableAmountCents = targetInvoice ? targetInvoice.amount_cents : client.amount_cents;
 
     if (method === 'card') {
       if (!pConfig.card_enabled) {
@@ -47,13 +102,14 @@ export async function POST(request: Request) {
       const result = await execute(
         `INSERT INTO payments (
           client_id, reference_number, method, amount_cents, currency,
-          status, mode, failure_reason, client_ip, created_at, updated_at
-        ) VALUES (?, ?, 'card', ?, 'EUR', 'failed', ?, ?, ?, ?, ?)`,
+          status, mode, invoice_id, failure_reason, client_ip, created_at, updated_at
+        ) VALUES (?, ?, 'card', ?, 'EUR', 'failed', ?, ?, ?, ?, ?, ?)`,
         [
           client.id,
           client.reference_number,
-          client.amount_cents,
+          payableAmountCents,
           mode,
+          targetInvoice ? targetInvoice.id : null,
           failureReason,
           ip,
           now,
@@ -71,7 +127,9 @@ export async function POST(request: Request) {
         details: {
           paymentId,
           referenceNumber: client.reference_number,
-          amountCents: client.amount_cents,
+          invoiceId: targetInvoice ? targetInvoice.id : null,
+          invoiceNumber: targetInvoice ? targetInvoice.invoice_number : null,
+          amountCents: payableAmountCents,
           mode,
           failureReason,
         },
@@ -98,13 +156,14 @@ export async function POST(request: Request) {
       const result = await execute(
         `INSERT INTO payments (
           client_id, reference_number, method, amount_cents, currency,
-          status, mode, crypto_currency, crypto_network, crypto_tx_hash,
+          status, mode, invoice_id, crypto_currency, crypto_network, crypto_tx_hash,
           client_ip, created_at, updated_at
-        ) VALUES (?, ?, 'crypto', ?, 'EUR', 'under_review', 'live', ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, 'crypto', ?, 'EUR', 'under_review', 'live', ?, ?, ?, ?, ?, ?, ?)`,
         [
           client.id,
           client.reference_number,
-          client.amount_cents,
+          payableAmountCents,
+          targetInvoice ? targetInvoice.id : null,
           cryptoCurrency || 'USDT',
           cryptoNetwork || 'Ethereum (ERC20)',
           cryptoTxHash.trim(),
@@ -115,6 +174,14 @@ export async function POST(request: Request) {
       );
 
       const paymentId = result.lastInsertRowid;
+
+      // Update invoice status to 'payment_pending' if invoice is associated
+      if (targetInvoice) {
+        await execute(
+          "UPDATE invoices SET status = 'payment_pending', updated_at = ? WHERE id = ?",
+          [now, targetInvoice.id]
+        );
+      }
 
       // Update client status to under_review
       await execute('UPDATE clients SET payment_status = \'under_review\', updated_at = ? WHERE id = ?', [now, client.id]);
@@ -127,6 +194,8 @@ export async function POST(request: Request) {
         details: {
           paymentId,
           referenceNumber: client.reference_number,
+          invoiceId: targetInvoice ? targetInvoice.id : null,
+          invoiceNumber: targetInvoice ? targetInvoice.invoice_number : null,
           cryptoCurrency,
           cryptoNetwork,
           cryptoTxHash: cryptoTxHash.trim(),
@@ -165,14 +234,26 @@ export async function GET(request: Request) {
   const status = searchParams.get('status');
   const method = searchParams.get('method');
   const search = searchParams.get('search');
+  const invoiceId = searchParams.get('invoiceId');
 
   let query = `
-    SELECT p.*, c.full_name as client_name, c.email as client_email
+    SELECT
+      p.*,
+      c.full_name as client_name,
+      c.email as client_email,
+      inv.invoice_number as invoice_number,
+      inv.reason as invoice_reason
     FROM payments p
     LEFT JOIN clients c ON p.client_id = c.id
+    LEFT JOIN invoices inv ON p.invoice_id = inv.id
     WHERE 1=1
   `;
   const params: any[] = [];
+
+  if (invoiceId) {
+    query += ' AND p.invoice_id = ?';
+    params.push(parseInt(invoiceId, 10));
+  }
 
   if (status && status !== 'all') {
     query += ' AND p.status = ?';
@@ -185,9 +266,15 @@ export async function GET(request: Request) {
   }
 
   if (search) {
-    query += ' AND (p.reference_number LIKE ? OR c.full_name LIKE ? OR c.email LIKE ? OR p.crypto_tx_hash LIKE ?)';
+    query += ` AND (
+      p.reference_number LIKE ?
+      OR c.full_name LIKE ?
+      OR c.email LIKE ?
+      OR p.crypto_tx_hash LIKE ?
+      OR inv.invoice_number LIKE ?
+    )`;
     const term = `%${search.trim()}%`;
-    params.push(term, term, term, term);
+    params.push(term, term, term, term, term);
   }
 
   query += ' ORDER BY p.created_at DESC';

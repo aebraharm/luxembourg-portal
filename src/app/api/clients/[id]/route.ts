@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { verifyToken, AdminSessionPayload } from '@/lib/auth';
-import { queryOne, queryAll, execute } from '@/lib/db';
+import { queryOne, queryAll, execute, deriveInvoiceStatus } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
-import { ClientRecord, PaymentRecord } from '@/lib/types';
+import { ClientRecord, InvoiceRecord, PaymentRecord } from '@/lib/types';
 
 export async function GET(
   request: Request,
@@ -19,12 +19,30 @@ export async function GET(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
-  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [clientId]);
+  const client = await queryOne<ClientRecord>(
+    `SELECT c.*, r.name as region_name
+     FROM clients c
+     LEFT JOIN regions r ON c.region_id = r.id
+     WHERE c.id = ?`,
+    [clientId]
+  );
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 });
 
-  const payments = await queryAll<PaymentRecord>('SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC', [clientId]);
+  const invoicesRows = await queryAll<InvoiceRecord>(
+    'SELECT * FROM invoices WHERE client_id = ? ORDER BY created_at DESC',
+    [clientId]
+  );
+  const invoices = invoicesRows.map((inv) => ({
+    ...inv,
+    effective_status: deriveInvoiceStatus(inv.status, inv.due_date),
+  }));
 
-  return NextResponse.json({ client, payments });
+  const payments = await queryAll<PaymentRecord>(
+    'SELECT * FROM payments WHERE client_id = ? ORDER BY created_at DESC',
+    [clientId]
+  );
+
+  return NextResponse.json({ client, invoices, payments });
 }
 
 export async function PUT(
@@ -41,12 +59,16 @@ export async function PUT(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
+  const existingClient = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [clientId]);
+  if (!existingClient) return NextResponse.json({ error: 'Client not found' }, { status: 404 });
+
   try {
     const body = await request.json();
     const {
       fullName,
       email,
       referenceNumber,
+      regionId,
       caseCategory,
       caseDetails,
       amountEur,
@@ -61,12 +83,6 @@ export async function PUT(
     const normEmail = email.trim().toLowerCase();
     const normRef = referenceNumber.trim().toUpperCase();
 
-    const amountNum = parseFloat(amountEur);
-    if (isNaN(amountNum) || amountNum < 0) {
-      return NextResponse.json({ error: 'Valid positive amount in EUR is required.' }, { status: 400 });
-    }
-    const amountCents = Math.round(amountNum * 100);
-
     // Check reference number uniqueness against other clients
     const clash = await queryOne(
       'SELECT id FROM clients WHERE UPPER(reference_number) = ? AND id != ?',
@@ -77,6 +93,32 @@ export async function PUT(
         { error: `The reference number "${normRef}" is already assigned to another client.` },
         { status: 400 }
       );
+    }
+
+    // Validate region if provided
+    let finalRegionId: number | null = existingClient.region_id || null;
+    if (regionId !== undefined) {
+      if (regionId === null || regionId === '' || regionId === 'none') {
+        finalRegionId = null;
+      } else {
+        const parsedRegionId = parseInt(String(regionId), 10);
+        if (!isNaN(parsedRegionId)) {
+          const region = await queryOne('SELECT id FROM regions WHERE id = ?', [parsedRegionId]);
+          if (!region) {
+            return NextResponse.json({ error: 'Selected region does not exist.' }, { status: 400 });
+          }
+          finalRegionId = parsedRegionId;
+        }
+      }
+    }
+
+    // Optional amount update
+    let finalAmountCents = existingClient.amount_cents;
+    if (amountEur !== undefined && amountEur !== null && String(amountEur).trim() !== '') {
+      const amountNum = parseFloat(String(amountEur));
+      if (!isNaN(amountNum) && amountNum >= 0) {
+        finalAmountCents = Math.round(amountNum * 100);
+      }
     }
 
     const now = new Date().toISOString();
@@ -95,21 +137,23 @@ export async function PUT(
         admin_notes = ?,
         is_active = ?,
         can_client_edit_photo = ?,
+        region_id = ?,
         updated_at = ?
       WHERE id = ?`,
       [
         fullName.trim(),
         normEmail,
         normRef,
-        photoUrl !== undefined ? photoUrl : null,
-        caseCategory,
-        caseDetails || '',
-        amountCents,
-        paymentStatus,
-        paymentInstructions || '',
-        adminNotes || '',
-        isActive ? 1 : 0,
-        canClientEditPhoto ? 1 : 0,
+        photoUrl !== undefined ? photoUrl : existingClient.photo_url,
+        caseCategory || existingClient.case_category,
+        caseDetails !== undefined ? caseDetails : existingClient.case_details,
+        finalAmountCents,
+        paymentStatus || existingClient.payment_status,
+        paymentInstructions !== undefined ? paymentInstructions : existingClient.payment_instructions,
+        adminNotes !== undefined ? adminNotes : existingClient.admin_notes,
+        isActive !== undefined ? (isActive ? 1 : 0) : existingClient.is_active,
+        canClientEditPhoto !== undefined ? (canClientEditPhoto ? 1 : 0) : existingClient.can_client_edit_photo,
+        finalRegionId,
         now,
         clientId,
       ]
@@ -124,8 +168,8 @@ export async function PUT(
         clientId,
         fullName: fullName.trim(),
         referenceNumber: normRef,
-        amountCents,
-        paymentStatus,
+        previousRegionId: existingClient.region_id,
+        newRegionId: finalRegionId,
       },
     });
 
@@ -149,14 +193,8 @@ export async function DELETE(
   const session = verifyToken<AdminSessionPayload>(token);
   if (!session) return NextResponse.json({ error: 'Session expired' }, { status: 401 });
 
-  const client = await queryOne<{ full_name: string; reference_number: string }>(
-    'SELECT full_name, reference_number FROM clients WHERE id = ?',
-    [clientId]
-  );
-
-  if (!client) {
-    return NextResponse.json({ error: 'Client not found' }, { status: 404 });
-  }
+  const client = await queryOne<ClientRecord>('SELECT * FROM clients WHERE id = ?', [clientId]);
+  if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 });
 
   await execute('DELETE FROM clients WHERE id = ?', [clientId]);
 
@@ -165,8 +203,8 @@ export async function DELETE(
     actorId: session.adminId,
     actorEmail: session.email,
     action: 'DELETE_CLIENT_RECORD',
-    details: { clientId, clientName: client.full_name, referenceNumber: client.reference_number },
+    details: { clientId, fullName: client.full_name, referenceNumber: client.reference_number },
   });
 
-  return NextResponse.json({ success: true, message: 'Client record deleted successfully.' });
+  return NextResponse.json({ success: true });
 }

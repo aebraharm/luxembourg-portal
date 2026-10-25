@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { BrandLogo } from '@/components/BrandLogo';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import {
@@ -24,8 +24,10 @@ interface ClientMe {
   amountCents: number;
 }
 
-export default function PayPalPaymentPage() {
+function PayPalPaymentContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const invoiceId = searchParams?.get('invoiceId');
 
   const [client, setClient] = useState<ClientMe | null>(null);
   const [methods, setMethods] = useState<PaymentMethodSettings | null>(null);
@@ -161,7 +163,7 @@ export default function PayPalPaymentPage() {
           {/* Primary Action Button: Return to payment-method selection page */}
           <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
-              onClick={() => router.push('/client/payment/select')}
+              onClick={() => router.push(invoiceId ? `/client/payment/select?invoiceId=${invoiceId}` : '/client/payment/select')}
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-bold text-sm shadow-md shadow-red-600/20 transition-all"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -189,5 +191,19 @@ export default function PayPalPaymentPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function PayPalPaymentPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="text-xs font-semibold text-slate-500">Loading payment policy...</div>
+        </div>
+      }
+    >
+      <PayPalPaymentContent />
+    </Suspense>
   );
 }

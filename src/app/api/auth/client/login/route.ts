@@ -85,6 +85,8 @@ export async function POST(request: Request) {
         caseCategory: client.case_category,
         amountCents: client.amount_cents,
         paymentStatus: client.payment_status,
+        region: client.region_name || null,
+        regionId: client.region_id || null,
       },
     });
 
